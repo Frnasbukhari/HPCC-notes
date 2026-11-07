@@ -1,16 +1,29 @@
 # COE 502 — Lecture 5: Instruction-Level Parallelism
 
-**Parallel Processing Architectures** · KFUPM · Dr. Abdulaziz Tabbakh
+**Parallel Processing Architectures** · KFUPM · Dr. Abdulaziz Tabbakh · slides: `05-ILP.pdf`
 
-> These notes follow deck `05-ILP.pdf`. Anything marked **[note]** is extra context not on the slides.
->
-> **This is the parallelism you never write.** The programmer hands over ordinary serial code and
-> the hardware (or the compiler) finds the independent instructions inside it. Everything in this
-> deck is machinery for doing that better.
+---
+
+## The whole lecture in 30 seconds
+
+You write ordinary one-line-after-another code. Some of those instructions don't depend on each other, so they *could* overlap. That hidden overlap is **instruction-level parallelism (ILP)**. You never write it yourself: the compiler or the hardware has to find it.
+
+| Part | Who finds the independent work | Sections |
+|---|---|---|
+| **Static scheduling** | The **compiler**, before the program runs | 2–10 |
+| **Dynamic scheduling** | The **hardware**, while the program runs | 11–15 |
+| **VLIW** | The **compiler**, packing several operations into one long instruction | 16 |
+| **Vector** | Nobody: **one instruction works on a whole list** of numbers | 17 |
+
+One rule sits behind almost everything in this lecture:
+
+> **Some results take several cycles to be ready. Put independent work in that gap instead of waiting.**
 
 ---
 
 ## Contents
+
+- [Key words](#key-words)
 
 **Part I — Statically scheduled pipelines**
 1. [What this deck is trying to fix](#1-what-this-deck-is-trying-to-fix)
@@ -41,86 +54,58 @@
 
 ---
 
+## Key words
+
+| Word | Meaning |
+|---|---|
+| **IF · ID · EX · ME · WB** | The 5 pipeline stages: fetch · decode and read registers · execute · memory · write the result to a register |
+| **Stall** | A wasted cycle: an instruction waits because an input isn't ready |
+| **Forwarding** | Passing a result straight to the next instruction, without waiting for WB |
+| **Functional unit** | Hardware that does one kind of work: integer ALU, FP adder, load/store unit |
+| **Issue** | Sending an instruction to its functional unit to start executing |
+| **Latency** | How many cycles a *dependent* instruction must wait (§3) |
+| **Hazard** | A case where overlapping instructions could give a wrong answer or fight over hardware (§4) |
+| **Basic block** | Straight-line code with no branch into or out of the middle (§7) |
+| **CPI / IPC** | Cycles per instruction / instructions per cycle. IPC = 1 / CPI |
+
+---
+
 ## 1. What this deck is trying to fix
 
-Go back to the one equation from Lecture 2:
+**The idea:** a pipeline finishes at most one instruction per cycle (CPI = 1), and every stall pushes CPI above 1. The deck tries to (a) remove stalls and (b) finish *more* than one instruction per cycle.
 
 $$\text{CPI} = 1 + \text{stalls per instruction}$$
 
-A perfect pipeline has CPI = 1. The deck has **two ambitions**, and they are different sizes:
-
-| Ambition | Means | Covered by |
+| Goal | Means | Covered by |
 |---|---|---|
-| Get CPI **down to 1** | Remove the stalls | Static scheduling, loop unrolling, software pipelining, dynamic scheduling |
-| Get CPI **below 1** | **Finish more than one instruction per cycle** | Superscalar, VLIW, vector |
+| CPI **down to 1** | Remove stalls by filling waits with independent work | static scheduling, loop unrolling, software pipelining, dynamic scheduling |
+| CPI **below 1** | Finish more than one instruction per cycle | superscalar, VLIW, vector |
 
-> **To achieve CPI < 1, need to complete multiple instructions per clock.** (slide 31)
-
-### Where the opportunity comes from
+Where the opportunity comes from:
 
 ```
 I1:  a = b + c      // independent
-I2:  d = e + f      // independent  → I1 and I2 could run simultaneously
-I3:  g = a + d      // needs BOTH   → must wait
+I2:  d = e + f      // independent  → I1 and I2 could run at the same time
+I3:  g = a + d      // needs both   → must wait for them
 ```
 
-Nobody put that independence there. You wrote three sequential lines; the independence is a property of what you happened to write. **Instruction-level parallelism** is the hardware's or compiler's job to find.
-
-### Who does the finding?
-
-| | **Static scheduling** | **Dynamic scheduling** |
+| | Static scheduling | Dynamic scheduling |
 |---|---|---|
-| Who | the **compiler**, before the program runs | the **hardware**, at run time |
-| Sees | the whole program, unlimited thinking time | a small window, nanoseconds |
-| Knows | nothing about cache misses or actual addresses | exactly what just happened |
-
-### The deck's roadmap (slide 2)
-
-> **Statically Scheduled Pipelines**
-> - 5-stage pipeline
-> - Pipelines with out-of-order completion
-> - Superpipelined and Superscalar CPU
-> - Static Instruction Scheduling
-> - Loop Unrolling
-> - Software Pipelining
->
-> **Dynamically Scheduled Pipelines**
->
-> **VLIW Microarchitectures**
->
-> **Vector Microarchitectures**
-
-It is a progression in **who does the thinking**: compiler → hardware → compiler again, more aggressively → neither, because the data is uniform.
+| Who | the compiler, before the program runs | the hardware, at run time |
+| Sees | the whole program, with unlimited time to think | a small window of instructions, in nanoseconds |
+| Knows | nothing about cache misses or actual memory addresses | exactly what is happening right now |
 
 ---
 
 ## 2. The baseline: a pipeline with a floating-point lane
 
-### Slide 3 — the starting point
+**The idea:** FP math is slow, so it gets its own 5-stage lane. Instructions still **start** in program order but can now **finish** out of order. That causes the new problems in §4.
 
-The 5-stage pipeline, with his naming: **IF** (fetch) · **ID** (decode & register read) · **EX** (execute) · **MEM** (memory) · **WB** (writeback).
+**Slide 3 — the plain 5-stage pipeline:**
+- Every instruction goes through every stage in order, even stages it doesn't use. So every instruction took the same time, and they automatically finished in the order they started.
+- Control signals are created at decode and travel with the instruction ("the instruction carries its baggage"), because 5 different instructions are in the pipeline at once.
 
-Two remarks:
-
-> **Instructions go through every stage in process order, even if they don't use the stage.**
-
-An integer add has nothing to do in MEM, but passes through anyway. It cannot skip, because skipping would put two instructions in WB at once.
-
-> **Control implementation: instruction carries control — "instruction carries its baggage".**
-
-Control signals are generated at decode and travel **with** the instruction in the pipeline registers. They have to: five instructions are in the machine at once, each needing different settings, so a single central controller couldn't serve them.
-
-> 📌 **Keep that first remark.** Because every instruction took the *same path*, every instruction
-> took the *same time* — so they finished in the order they started, automatically. The next slide
-> destroys that.
-
-### Slide 4 — the second lane
-
-**The problem:** floating-point arithmetic is far slower than integer arithmetic. An FP number is a sign, exponent and fraction, so multiplying two means multiplying fractions, adding exponents, and renormalising.
-
-If you forced that into one EX stage, the clock period would stretch to accommodate it and **every integer instruction would pay**. (That is the single-cycle mistake from Lecture 2, at a smaller scale.)
-
-**The fix:** give FP its own lane.
+**Slide 4 — adding the FP lane:** if FP math were squeezed into one EX stage, the clock would have to slow down for *every* instruction. So FP gets its own lane:
 
 ```
                       ┌──────┐
@@ -133,29 +118,17 @@ If you forced that into one EX stage, the clock period would stretch to accommod
                         floating-point lane — 5 cycles
 ```
 
-The slide's bullets:
-
-> - **FP instructions take 5 clocks and are pipelined**
-> - **Integer unit:** handles integer instructions, branches, loads/stores (EX)
-> - **Two separate register files:** integer and FP
-> - **Forwarding paths into EX and FP1**
-> - **FP values forwarded from FP/ME and ME/WB to ID/EX** because of stores
-> - Instructions **wait in ID until they can proceed data-hazard free**
-> - **Static scheduling** of instructions
-> - **Still in-order execution, but out-of-order completion**
-
-**Decoding the opaque ones:**
-
-- **Two register files.** `R0–R31` hold integers, `F0–F31` hold floating-point values. Separate hardware, separate names — which is why the code says `ADD.S f1,f2,f1`. **An instruction's register names tell you which lane it takes.**
-- **"FP/ME and ME/WB to ID/EX"** — these are names of *pipeline registers* (the storage between FP5 and ME, between ME and WB, and between ID and EX). A store like `S.S F2,0(R1)` writes an FP value to memory but travels down the **integer** lane, so the FP result must be routed across. Those two bypass wires are that handover.
-- **"Wait in ID"** — ID is the gate. An instruction that isn't safe to release sits there and **blocks everything behind it**, because this machine releases strictly in order.
-
-### In-order execution vs out-of-order completion
-
-Two genuinely different things, and this deck turns on the distinction.
+What the slide's bullets mean:
+- **FP instructions take 5 cycles (FP1–FP5) and are pipelined:** a new FP operation can start every cycle.
+- **The integer lane (EX)** handles integer operations, branches, loads and stores.
+- **Two register files:** `R0–R31` for integers, `F0–F31` for FP. The register names tell you which lane an instruction takes.
+- **Forwarding** into EX and FP1. FP results are also forwarded across to the integer lane, because a store like `S.S F2,0(R1)` saves an FP value but travels down the integer lane.
+- **Instructions wait in ID** until they're safe to go, and block everything behind them.
+- **Static scheduling:** the compiler decides the order.
+- **In-order execution, out-of-order completion:**
 
 ```
-I1:  MUL.D  F0, F2, F4     ← floating-point, long lane
+I1:  MUL.D  F0, F2, F4     ← FP, long lane
 I2:  ADD    R1, R2, R3     ← integer, short lane
 ```
 
@@ -164,62 +137,98 @@ I2:  ADD    R1, R2, R3     ← integer, short lane
 | **I1** MUL.D | IF | ID | FP1 | FP2 | FP3 | FP4 | FP5 | ME | **WB** |
 | **I2** ADD | | IF | ID | EX | ME | **WB** | | | |
 
-**I2 writes at cycle 6; I1 writes at cycle 9.** The instruction written *second* finished *three cycles earlier*.
-
-Nothing was rearranged — both passed through ID in program order. They simply took lanes of different lengths.
+I2 started second but finished three cycles earlier. Nothing was reordered: both passed through ID in order. They just took lanes of different lengths.
 
 | Term | Meaning | Still guaranteed? |
 |---|---|---|
-| **In-order execution** | instructions *start* in program order | ✅ Yes |
-| **Out-of-order completion** | they *finish* in whatever order their lane allows | ❌ No |
+| **In-order execution** | instructions *start* in program order | ✅ yes |
+| **Out-of-order completion** | they *finish* whenever their lane allows | ❌ no |
 
-> Until this slide those were the same event. Now they have come apart — and §4 is the damage.
+> 💡 One door leading to a short corridor and a long corridor. People walk in one at a time, in order, but whoever takes the short corridor comes out first.
 
 ---
 
 ## 3. Latency and initiation interval
 
-Two timing numbers, easy to confuse, both needed for every pipeline-timing question.
-
-> **Latency of operation:** minimum number of cycles between an instruction producing a result and the instruction consuming it. The dependent instruction must **stall in ID** until its operand is forwarded.
-> **If functional units are linear pipelines then instruction latency is execution time − 1.**
-
-> **Repeat (initiation) interval:** number of cycles that must elapse between consecutive issues of instructions **to the same unit**. If a functional unit is not a linear pipeline, two consecutive instructions may not be issued in consecutive cycles because of **structural hazards**.
+**The idea:** two different timing numbers. **Latency** = how long a *dependent* instruction must wait for a result. **Initiation interval** = how often a unit can *start* a new operation, dependent or not.
 
 | | Question it answers |
 |---|---|
-| **Latency** | How many cycles must a **dependent** instruction wait? |
-| **Initiation interval** | How often can I **start a new operation** on this unit? |
+| **Latency** | How many cycles must a dependent instruction stall? |
+| **Initiation interval** | How often can this unit start a new operation? |
 
-The table for the baseline machine (slide 5):
+> 💡 A car wash with 5 stations, 1 minute each. A car takes 5 minutes to get through, but a new car can enter every minute (interval 1). A one-bay car wash that takes 5 minutes per car only takes a new car every 5 minutes (interval 5).
+
+Baseline machine (slide 5):
 
 | Functional unit | Latency | Initiation interval |
 |---|---|---|
-| **Integer ALU** | 0 | 1 |
-| **Load** | 1 | 1 |
-| **FP OP** | 4 | **1 (5 if not pipelined)** |
+| Integer ALU | 0 | 1 |
+| Load | 1 | 1 |
+| FP OP | 4 | 1 (5 if not pipelined) |
 
-Walking the rows:
+$$\text{latency} = \text{execution time} - 1$$
 
-- **Integer ALU, latency 0** — executes in one cycle (EX), forwarded immediately, so a dependent instruction follows with no stall. Execution time 1, minus 1 = 0.
-- **Load, latency 1** — the value isn't available until the end of MEM, but the consumer wants it at the start of its EX, the **same cycle**. One unavoidable bubble. This is the load-use hazard from Lecture 2, as a number.
-- **FP OP, latency 4** — five stages, result at the end of FP5. A dependent instruction waits 4 cycles. Execution time 5, minus 1 = 4.
+Why minus 1? The next instruction is always one cycle behind anyway, so that one cycle of waiting is free.
 
-**Every initiation interval is 1** because every unit here is **pipelined** — you can start a new operation each cycle while earlier ones are still inside. The bracketed "(5 if not pipelined)" is the counterexample: an unpipelined unit is *occupied*, so you must wait for it to empty.
+**Where each latency comes from.** A result is ready at the end of: **EX** (integer), **ME** (load, because the value comes from memory), **FP5** (FP). The consumer needs it at the start of its own EX (or FP1).
 
-> 📌 **Latency is about dependent instructions; initiation interval is about the unit's throughput,
-> dependent or not.** Latency 4 with interval 1 means a consumer waits four cycles but **four
-> independent FP ops can start back to back.**
+Integer ALU — latency 0:
+```
+Cycle:            1   2   3   4   5   6
+ADD  R1,R2,R3     IF  ID  EX  ME  WB     ← result at end of EX (cycle 3)
+SUB  R4,R1,R5         IF  ID  EX  ME  WB ← needs it at start of EX (cycle 4): forwarded, no stall
+```
+Load — latency 1:
+```
+Cycle:            1   2   3   4   5   6   7
+LD   R1,0(R2)     IF  ID  EX  ME  WB         ← value ready at end of ME (cycle 4)
+ADD  R3,R1,R4         IF  ID  ID* EX  ME  WB ← wanted it in cycle 4 → 1 stall
+```
+FP — latency 4:
+```
+Cycle:            1   2   3   4   5   6   7   8   9   10
+MUL.D F0,F2,F4    IF  ID  FP1 FP2 FP3 FP4 FP5 ME  WB      ← result at end of FP5 (cycle 7)
+ADD.D F6,F0,F8        IF  ID  ID* ID* ID* ID* FP1 FP2 FP3 ← 4 stalls
+```
 
-**That gap between 4 and 1 is the entire opportunity.** Fill those four cycles with independent work and the latency costs nothing. Finding such work is what static scheduling, loop unrolling and software pipelining are all for.
+**Initiation interval is 1** for every unit because they are all pipelined. An unpipelined FP unit would be busy for all 5 cycles, so even *independent* FP operations would have to start 5 cycles apart (interval 5). That waiting is a structural hazard (hardware busy), not a data one.
+
+### The rule you'll use everywhere
+
+$$\text{stalls} = \text{latency} - (\text{independent instructions placed in between}) \qquad (\text{never below } 0)$$
+
+Latency 4 with interval 1 means a dependent instruction waits 4 cycles, but 4 independent FP operations can start back to back. **Fill those 4 cycles with independent work and the latency costs nothing.** Sections 7–9 are all about finding that work.
+
+```
+Naive order                         Reordered
+MUL.D  F0,F2,F4                     MUL.D  F0,F2,F4
+ADD.D  F6,F0,F8     ← 4 stalls      MUL.D  F10,F12,F14  ┐
+MUL.D  F10,F12,F14                  MUL.D  F16,F18,F20  │ 4 independent
+MUL.D  F16,F18,F20                  MUL.D  F22,F24,F26  │ instructions
+MUL.D  F22,F24,F26                  DADDUI R1,R1,#8     ┘
+DADDUI R1,R1,#8                     ADD.D  F6,F0,F8     ← 4 − 4 = 0 stalls
+```
 
 ---
 
 ## 4. The new hazards
 
+**The idea:** because instructions can now finish out of order, **WAW** becomes possible and two instructions can try to **write registers in the same cycle**. **WAR** is still impossible. **RAW** stalls get longer.
+
+### The three data hazard names
+
+| Name | The program says… | The danger |
+|---|---|---|
+| **RAW** (read after write) | I1 writes a register, then I2 reads it | I2 reads too early and gets the old value |
+| **WAR** (write after read) | I1 reads a register, then I2 writes it | I2 writes too early, so I1 reads the new value by mistake |
+| **WAW** (write after write) | I1 writes, then I2 writes the same register | the writes land in the wrong order, so the older value survives |
+
+> 💡 A shared whiteboard. **RAW:** you copy a number before your colleague has written it. **WAR:** your colleague erases it before you've finished copying. **WAW:** the person meant to write first writes last, so their outdated number stays on the board.
+
 ### Structural hazards (slide 6)
 
-Out-of-order completion means two instructions can arrive at the same stage in the same cycle.
+Two instructions can reach the same stage in the same cycle:
 
 | | C1 | C2 | C3 | C4 | C5 | C6 | C7 | **C8** | **C9** | C10 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -229,34 +238,23 @@ Out-of-order completion means two instructions can arrive at the same stage in t
 | **I4** `L.S f12` | | | | IF | ID | EX | ME | **WB** | | |
 | **I5** `L.S f14` | | | | | IF | ID | EX | **ME** | **WB** | |
 
-> - **Conflict at cycle C8:** I1 and I5 are both in the ME stage *(does not matter since I1 does not access memory)*
-> - **Conflict at cycle C9:** I1 and I5 are both in the WB stage **and both store in FP registers**
->   - **Structural hazard on FP register file write port**
->   - Could add one write port to register file (**way too complex!!**)
-> - Also: **structural hazards on execution units**
->
-> **Two general techniques to remove structural hazards:**
-> - **Add hardware resources**
-> - **Deal with it by stalling instructions to serialize conflicts**
-
-**[note]** Note the C8 conflict is **harmless** — I1 passes through ME without using it. The C9 conflict is **real**, because both genuinely write an FP register. Extra write ports are expensive (the register file's area grows roughly with ports²), so the practical answer is to stall.
+- **C8:** I1 and I5 are both in ME. **Harmless:** I1 is an FP add and doesn't actually use memory.
+- **C9:** I1 and I5 are both in WB, both writing FP registers. **Real conflict** on the FP register file's write port.
+- Two general fixes: **add hardware** (an extra write port, "way too complex") or **stall** one instruction. In practice: stall.
 
 ### Data hazards (slide 7)
 
-> **WAW hazards on FP registers are possible since instructions now reach WB out of order:**
-> ```
-> Add.D f2, f4, f6
-> L.D   f2, 0(r2)
-> ```
-> **The LD must stall in ID.**
+**WAW is now possible:**
+```
+Cycle:            1   2   3   4   5   6   7   8   9
+ADD.D F2,F4,F6    IF  ID  FP1 FP2 FP3 FP4 FP5 ME  WB ← writes F2 in cycle 9
+L.D   F2,0(R2)        IF  ID  EX  ME  WB             ← writes F2 in cycle 6 (too early!)
+```
+Without protection, the slow `ADD.D` writes F2 last, so its stale value wins. Program order says the `L.D` value must be final. **Fix: the `L.D` stalls in ID** until its WB will come after the `ADD.D`'s.
 
-The `L.D` goes down the **short** lane and would reach WB *before* the `Add.D` on the long lane — so the Add.D's stale value would land last and win. Program order says L.D's value should be final.
+**WAR is still impossible:** every instruction reads its registers in **ID** (stage 2) and writes in **WB** (the last stage). A later instruction can never write before an earlier one has already read.
 
-> **Still no WAR hazards on registers since reads happen early.**
-
-Registers are read in **ID**, very early in the pipeline. By the time any instruction reaches WB, every earlier instruction has long since read what it needed. WAR cannot occur in this machine.
-
-> **More RAW hazard stalls due to longer latency instructions.**
+**RAW stalls get longer** (FP latency is 4):
 
 | | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | C10 | C11 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -264,24 +262,28 @@ Registers are read in **ID**, very early in the pipeline. By the time any instru
 | **I2** `MULT.D F0,F4,F6` | | IF | ID | **ID** | FP1 | FP2 | FP3 | FP4 | FP5 | ME | WB |
 | **I3** `S.D F0, 0(R2)` | | | IF | **IF** | ID | **ID** | **ID** | **ID** | **ID** | EX | ME |
 
-I2 stalls one cycle in ID waiting for the load. I3 then stalls **five** cycles in ID waiting for the multiply's result — because FP latency is 4 and the stall ripples.
+- I2 waits 1 cycle in ID for the load (load latency 1).
+- That stall **ripples**: I2 is still in ID during C4, so I3 can't enter ID and waits in IF.
+- I3 then waits in ID until the multiply finishes FP5 (C9), and executes in C10.
 
-> **No data hazards on memory.** Loads and stores follow the same pipeline path and are **processed in program order in the MEM stage**.
+> ⚠️ I3 loses **5 cycles in total = 1 in IF (the ripple) + 4 in ID (FP latency)**. It sits in ID for 5 cycles, but one of those is its normal ID cycle.
 
-**[note]** That's a design *choice* with a big consequence: memory operations cannot be reordered in this machine, so memory-level parallelism is nil. Dynamic scheduling later adds load/store queues precisely to relax this.
+**No data hazards on memory:** loads and stores all go through the single ME stage, in program order. The price: memory operations can never overlap or be reordered. Dynamic scheduling later adds load/store queues to relax this.
 
-### Summary of what changed
+### Summary
 
-| Hazard | In the simple 5-stage pipeline | With the FP lane |
-|---|---|---|
-| **RAW** | exists; mostly forwarded | **worse** — long FP latency means long stalls |
-| **WAR** | impossible | **still impossible** (reads happen in ID) |
-| **WAW** | impossible | ⚠️ **now possible** (out-of-order completion) |
-| **Structural** | on memory | ⚠️ **now also on the FP register write port** |
+| Hazard | Simple 5-stage pipeline | With the FP lane | Why |
+|---|---|---|---|
+| **RAW** | exists, mostly forwarded | **worse** | FP results take 4 extra cycles |
+| **WAR** | impossible | **still impossible** | reads happen in ID, long before any write |
+| **WAW** | impossible | ⚠️ **possible** | out-of-order completion |
+| **Structural** | on memory | ⚠️ **+ FP register write port** | two instructions can reach WB together |
 
 ---
 
 ## 5. Super-pipelined CPU
+
+**The idea:** cut the slow stages in two so the clock can tick about twice as fast. Each instruction now takes more cycles, so every stall costs more cycles. **You buy clock speed with stall cycles.**
 
 ```
 ┌─────┐  ┌─────┐  ┌────┐   ┌─────┐  ┌─────┐   ┌─────┐  ┌─────┐  ┌────┐
@@ -292,34 +294,60 @@ I2 stalls one cycle in ID waiting for the load. I3 then stalls **five** cycles i
                              └──────────────┘
 ```
 
-> Some stages in the 5-stage integer pipeline are **further pipelined**
-> - To **increase the clock rate**
-> - Here **IF, EX, and ME are now 2 pipeline stages**
-> - **Clock is 2× as fast (hopefully)**
-> - **Not "free"**:
->   - **Branch penalty when taken is now 3 clocks**
->   - **Latencies in clock are higher**
-> - Assuming unchanged 5-stages for FP
+IF, EX and ME are each split in two (8 stages). The FP lane is assumed unchanged.
 
-| Functional unit | Latency | Initiation interval |
+| Unit | Latency | Why it changed |
 |---|---|---|
-| Integer ALU | **1** *(was 0)* | 1 |
-| Load | **3** *(was 1)* | 1 |
-| FP OP | 4 | 1 (5 if not pipelined) |
+| Integer ALU | **1** (was 0) | the work now spans EX1 + EX2 = 2 stages → 2 − 1 |
+| Load | **3** (was 1) | the value is ready only after ME2: EX1, EX2, ME1, ME2 = 4 stages → 4 − 1 |
+| FP OP | 4 | FP lane assumed unchanged |
+| Taken branch | **3-cycle penalty** | more stages before the branch is decided, so more wrong instructions get fetched |
 
-> 📌 **The trade in one table.** Cycle time halves, but **measured in cycles everything got
-> longer** — the integer ALU's latency went 0 → 1, the load's 1 → 3, and the taken-branch penalty
-> grew to 3 clocks. You bought clock rate with stall cycles.
+Integer ALU — now 1 stall:
+```
+Cycle:            1   2   3   4   5   6   7   8
+ADD  R1,R2,R3     IF1 IF2 ID  EX1 EX2 ME1 ME2 WB ← result at end of EX2 (cycle 5)
+SUB  R4,R1,R5         IF1 IF2 ID  ID* EX1 EX2    ← 1 stall
+```
+Load — now 3 stalls:
+```
+Cycle:            1   2   3   4   5   6   7   8   9
+LD   R1,0(R2)     IF1 IF2 ID  EX1 EX2 ME1 ME2 WB     ← value ready at end of ME2 (cycle 7)
+ADD  R3,R1,R4         IF1 IF2 ID  ID* ID* ID* EX1 EX2← 3 stalls
+```
+Taken branch — 3 wasted fetches (a penalty of 3 matches the branch being decided at the end of EX1; the slide doesn't say which stage):
+```
+Cycle:            1   2   3   4   5
+BEQ (taken)       IF1 IF2 ID  EX1    ← outcome known at end of cycle 4
+next (wrong)          IF1 IF2 ID  ✗
+next (wrong)              IF1 IF2 ✗
+next (wrong)                  IF1 ✗
+branch target                     IF1  ← right instruction starts in cycle 5
+```
 
-**[note]** This is exactly the Pentium 4's bet (≈20 stages chasing clock rate), and exactly why it lost. Past a point the deeper pipeline's misprediction and latency penalties exceed the clock gain. It is one of the walls that ended the clock race in Lecture 1.
+### Is it actually faster?
+
+$$\text{time} = \text{instructions} \times \text{CPI} \times \text{cycle time}$$
+
+A faster clock (smaller cycle time), but a higher CPI (more stalls). Example, 10⁹ instructions:
+
+| | Cycle time | CPI | Time |
+|---|---|---|---|
+| Old 5-stage | 1.0 ns | 1.3 | 1.30 s |
+| 8-stage, moderate stalls | 0.5 ns | 1.8 | **0.90 s** ✅ |
+| 8-stage, stall-heavy code | 0.5 ns | 2.8 | **1.40 s** ❌ |
+
+**Why "2× (hopefully)":** every stage ends in a pipeline register, which adds a fixed delay. A 1.0 ns stage = 0.9 ns of work + 0.1 ns for the register. Split it in half: 0.45 + 0.1 = 0.55 ns, not 0.5. So about 1.8×, and less with every extra split.
+
+> 💡 The **Pentium 4** pushed this to ~20+ stages to chase clock speed. Branch mispredictions threw away more work, latencies in cycles grew, and power and heat exploded (the power wall from Lecture 1). Past a point, deeper pipelines get slower, which helped end the clock-speed race.
 
 ---
 
 ## 6. Superscalar CPU
 
-> A superscalar processor **executes more than one instruction during a clock cycle** by simultaneously dispatching multiple instructions to **redundant functional units** on the processor.
->
-> Each functional unit is **not a separate CPU core** but an **execution resource within a single CPU** such as an ALU, a bit shifter, or a multiplier.
+**The idea:** start **2 instructions per cycle**, side by side, at the same clock speed. Still one CPU running one program; it just has extra functional units inside. It is **not** multiple cores.
+
+> 💡 Two cooks working side by side on the same order list: one does mains on the grill, one does desserts in the oven. Two dishes can start every minute, but only if they don't depend on each other.
 
 ```
    scalar                          superscalar
@@ -340,37 +368,68 @@ I2 stalls one cycle in ID waiting for the load. I3 then stalls **five** cycles i
 
 ### The 2-way machine (slide 10)
 
-> **Fetch, decode and execute up to 2 instructions per clock**
-> - **Same clock rate** as basic pipeline
-> - **Easy because of the 2 (int and fp) register files**
-> - **Issue a pair of instructions**
-> - **Pair must be integer/branch/memory and fp pair (compiler)**
-> - Instructions in pair must be **independent and have no hazard with prior instructions**
-> - Same latencies as basic pipeline; **branches execute in EX**
-> - **Branches and latencies waste more instruction slots**
-> - **Exceptions are more complex**
->
-> **Hard to build more than 2-way**
->
-> **IPC (instructions per clock) instead of CPI (IPC = 1/CPI)**
+1. **Up to 2 instructions per cycle**, same clock rate as the basic pipeline.
+2. **The pair must be one integer/branch/memory instruction + one FP instruction.** They read different register files, so no extra read ports are needed. Allowing *any* two would mean doubling the ports on one register file, which is expensive.
+3. **The compiler** places valid pairs next to each other.
+4. **The two must be independent** of each other and of earlier unfinished instructions. If not, the first goes alone and the second waits a cycle.
+5. Same latencies as the basic pipeline; branches are resolved in EX.
 
-**[note] Why the pair must be one integer and one FP.** Because there are two separate register files, the pair reads from different hardware — no port contention. A general 2-way machine that could issue *any* two instructions would need twice the read ports on one register file, which is the expensive thing. This design gets 2-way issue almost for free by exploiting a structure that already existed.
+**Example:**
+```
+I1  L.D    F0, 0(R1)      ; int/memory
+I2  ADD.D  F4, F2, F6     ; FP, independent of I1
+I3  DADDUI R1, R1, #8     ; int
+I4  MUL.D  F8, F0, F10    ; FP, needs F0 from I1
+I5  DSUB   R5, R6, R7     ; int, independent
+```
+```
+Cycle:            1   2   3   4   5   6   7   8   9   10  11
+I1 L.D    F0      IF  ID  EX  ME  WB
+I2 ADD.D  F4      IF  ID  FP1 FP2 FP3 FP4 FP5 ME  WB
+I3 DADDUI R1          IF  ID  EX  ME  WB
+I4 MUL.D  F8          IF  ID  ID* FP1 FP2 FP3 FP4 FP5 ME  WB
+I5 DSUB   R5              IF  ID  EX  ME  WB
+```
+- I1 + I2 enter together (int + FP, independent).
+- I3 + I4 enter together, but I4 needs F0 from the load, so it waits one cycle in ID.
+- I5 enters behind them.
 
-**Why "branches and latencies waste more slots":** a stall now wastes **two** issue slots per cycle instead of one. Superscalar makes every stall twice as expensive, which is why it pairs so naturally with better scheduling.
+> ⚠️ **"2 per cycle" does not mean an instruction finishes in less than a cycle.** Every instruction still goes through every stage. The gain is that **twice as many instructions are in flight at once**: the staircase of start points steps by 2 here instead of 1. Over millions of instructions, the rate they enter = the rate they finish = IPC.
 
-**Superpipelining and superscalar combine** — the slide's red note adds superpipelining to the superscalar diagram. They are orthogonal: one shortens the cycle, the other widens the issue.
+> 💡 Compared with the FP-lane machine (§2): same lanes, but the FP-lane machine has **one door** (one instruction enters per cycle) and the superscalar has a **double door** (two enter per cycle).
+
+**IPC = 1 / CPI.** Here, 5 instructions start executing over 3 cycles (EX/FP1 in C3, C4, C5): 6 slots, 1 empty → IPC ≈ 1.67 in the long run. The maximum for 2-way is 2.0.
+
+### Handling hazards in the pair
+
+Same tools as before (forward, stall in ID), plus one new move: **split the pair**. Every cycle the hardware checks:
+1. Can the first instruction go (no hazard with earlier instructions)? **No** → both wait.
+2. Can the two go together (int + FP, second independent of first)? **No** → first goes alone.
+3. Can the second go (no hazard with earlier instructions)? **No** → first goes alone.
+
+Instructions always issue **in program order**: the second can never overtake the first.
+
+### The costs
+
+- **Stalls cost twice as much:** a stall cycle now wastes **2** slots. A load with latency 1 can cost up to **3** slots: its partner in the same cycle can't use the value, and neither can either slot in the next cycle.
+- **Exceptions are harder:** two instructions start together but finish at different times.
+- **Hard to go beyond 2-way:** issuing n instructions together means checking every pair among them, n(n−1)/2 checks: 1 for 2-way, 6 for 4-way, 28 for 8-way (more in §15).
+
+**Superpipelining + superscalar combine:** one shortens the cycle, the other widens it. Ideal: 2× clock × 2-way = up to 4× more instructions per second. Less in practice, because both make stalls more expensive.
 
 ---
 
 ## 7. In-order (static) instruction scheduling
 
-> To maximize instruction throughput (IPC) of static pipelines, **Compiler moves code up or down**:
-> - **Local** (basic block)
-> - **Global** (across basic blocks)
->   - **Cyclic** (loops)
->   - **Non-cyclic** (traces)
+**The idea:** the hardware runs instructions in exactly the written order and won't skip past a stuck one. So the **compiler rewrites the order** so that independent instructions fill the waits.
 
-**[note] A basic block** is a straight run of instructions with no branch in and no branch out — execution enters at the top and leaves at the bottom. It is the unit within which a compiler can reorder freely, because control flow can't jump into the middle.
+> **Compiler moves code up or down:**
+> - **Local:** inside one basic block
+> - **Global:** across basic blocks
+>   - **Cyclic:** loops (→ loop unrolling, software pipelining)
+>   - **Non-cyclic:** traces (the most likely path through several blocks, scheduled as if it were one long block)
+
+**Basic block** = straight-line code with no branch into or out of the middle: you enter at the top and leave at the bottom. Inside one, the compiler can reorder freely, as long as it respects the dependencies.
 
 ### The running example
 
@@ -378,174 +437,267 @@ I2 stalls one cycle in ID waiting for the load. I3 then stalls **five** cycles i
 for (i = 0; i < 100; i++)
     A[i] := a[i] + b[i];
 ```
+> ⚠️ `:=` is Pascal notation, and Pascal ignores case, so **A and a are the same array**. That's why the store uses R1, the same pointer as the first load.
 
-Unoptimized, on the basic pipeline (numbers in brackets are **clocks**, including stalls):
+| Instruction | Plain words |
+|---|---|
+| `L.S F0,#4(R1)` | load a number from list a (address R1 + 4) |
+| `L.S F1,#4(R2)` | load a number from list b |
+| `ADD.S F2,F1,F0` | add them |
+| `S.S F2,#4(R1)` | save the answer |
+| `ADDI R1,R1,#8` | move the list-a pointer forward |
+| `ADDI R2,R2,#8` | move the list-b pointer forward |
+| `SUBI R3,R3,#2` | count down |
+| `BNEZ R3,Loop` | if not finished, go back to the top |
 
-| | Instruction | Clocks |
+**Unscheduled: 15 clocks per iteration.** The clock count for each instruction includes the stalls before it.
+
+| Instruction | Clocks | Why |
 |---|---|---|
-| `Loop:` | `L.S F0,#4(R1)` | (1) |
-| | `L.S F1,#4(R2)` | (1) |
-| | `ADD.S F2,F1,F0` | **(2)** |
-| | `S.S F2,#4(R1)` | **(5)** |
-| | `ADDI R1,R1,#8` | (1) |
-| | `ADDI R2,R2,#8` | (1) |
-| | `SUBI R3,R3,#2` | (1) |
-| | `BNEZ R3,Loop` | **(3)** |
+| `L.S F0` | 1 | |
+| `L.S F1` | 1 | |
+| `ADD.S` | **2** | needs F1 from the load right before it → 1 stall |
+| `S.S` | **5** | needs F2 from the add right before it → 4 stalls |
+| `ADDI`, `ADDI`, `SUBI` | 1 each | |
+| `BNEZ` | **3** | branch penalty: 2 wasted fetches |
+| **Total** | **15** | CPI = 15/8 ≈ 1.88 |
 
-> **Total Execution Time: 15 Clocks; CPI = 15/8 = 1.88**
-
-The costs: `ADD.S` waits for the second load (load latency 1 → 2 clocks), `S.S` waits for the FP add (FP latency 4 → 5 clocks), and the branch costs 3.
+```
+Cycle:            1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17  18
+L.S   F0,#4(R1)   IF  ID  EX  ME  WB
+L.S   F1,#4(R2)       IF  ID  EX  ME  WB
+ADD.S F2,F1,F0            IF  ID  ID* FP1 FP2 FP3 FP4 FP5 ME  WB
+S.S   F2,#4(R1)               IF  IF* ID  ID* ID* ID* ID* EX  ME  WB
+ADDI  R1,R1,#8                        IF  IF* IF* IF* IF* ID  EX  ME  WB
+ADDI  R2,R2,#8                                            IF  ID  EX  ME  WB
+SUBI  R3,R3,#2                                                IF  ID  EX  ME  WB
+BNEZ  R3,Loop                                                     IF  ID  EX
+(wrong)                                                               IF  ID  ✗
+(wrong)                                                                   IF  ✗
+L.S F0 next iter                                                              IF  ID  EX
+```
+- **C5:** the add wants to start, but b only arrives at the end of C5 (ME of the second load), so it waits.
+- **C7–C10:** the store waits for the sum, which is ready at the end of FP5 (C10).
+- **C7–C10:** `ADDI R1` doesn't need the sum, but it's stuck behind the store (in-order).
+- **15** = `L.S F0` reaches EX in C3, and the next iteration's `L.S F0` reaches EX in C18.
 
 ### Local code scheduling (slide 12)
 
-> **Compiler moves instructions inside the loop body:**
-> - **Move SUBI up**
-> - **Move S.S down**
+**Move SUBI up, move S.S down:**
 
-| | Instruction | Clocks |
+```asm
+Loop:  L.S   F0,#4(R1)
+       L.S   F1,#4(R2)
+       SUBI  R3,R3,#2      ← moved up: fills the load gap
+       ADD.S F2,F1,F0      ← no stall now
+       ADDI  R1,R1,#8
+       ADDI  R2,R2,#8
+       S.S   F2,#-4(R1)    ← moved down: 2 instructions between it and the add
+       BNEZ  R3,Loop
+```
+
+| Producer → consumer | Latency | Independent instructions between | Stalls |
+|---|---|---|---|
+| `L.S F1` → `ADD.S` | 1 | 1 (`SUBI`) | 0 |
+| `ADD.S` → `S.S` | 4 | 2 (`ADDI`, `ADDI`) | 2 |
+
+**12 clocks** → speedup 15/12 = **1.25**.
+
+```
+Cycle:            1   2   3   4   5   6   7   8   9   10  11  12  13  14  15
+L.S   F0,#4(R1)   IF  ID  EX  ME  WB
+L.S   F1,#4(R2)       IF  ID  EX  ME  WB
+SUBI  R3,R3,#2            IF  ID  EX  ME  WB
+ADD.S F2,F1,F0                IF  ID  FP1 FP2 FP3 FP4 FP5 ME  WB
+ADDI  R1,R1,#8                    IF  ID  EX  ME  WB
+ADDI  R2,R2,#8                        IF  ID  EX  ME  WB
+S.S   F2,#-4(R1)                          IF  ID  ID* ID* EX  ME  WB
+BNEZ  R3,Loop                                 IF  IF* IF* ID  EX
+(wrong)                                                   IF  ID  ✗
+(wrong)                                                       IF  ✗
+L.S F0 next iter                                                  IF  ID  EX
+```
+
+### ⚠️ The displacement fix (exam favourite)
+
+`S.S` builds its address from R1. It now runs **after** `ADDI R1,R1,#8`, so R1 has already moved. Example: R1 = 1000, and the answer belongs at 1004.
+
+| Order | R1 when the store runs | Address |
 |---|---|---|
-| `Loop:` | `L.S F0,#4(R1)` | (1) |
-| | `L.S F1,#4(R2)` | (1) |
-| | `SUBI R3,R3,#2` | (1) ← moved up |
-| | `ADD.S F2,F1,F0` | **(1)** ← stall gone |
-| | `ADDI R1,R1,#8` | (1) |
-| | `ADDI R2,R2,#8` | (1) |
-| | `S.S F2,#-4(R1)` | **(3)** ← moved down |
-| | `BNEZ R3,Loop` | (3) |
+| Original: `S.S F2,#4(R1)`, then `ADDI` | 1000 | 1000 + 4 = **1004** ✅ |
+| Moved, not fixed: `ADDI`, then `S.S F2,#4(R1)` | 1008 | 1008 + 4 = 1012 ❌ |
+| Moved and fixed: `ADDI`, then `S.S F2,#-4(R1)` | 1008 | 1008 − 4 = **1004** ✅ |
 
-> **Must change the displacement of the store (WAR hazard on R1)**
->
-> **Execution time is 12 clocks, a speed up of 15/12 = 1.25**
->
-> The penalty of the branch cannot be improved:
-> - Change the code and use a branch at the top of the loop body
-> - **Delayed branches**
->
-> **Easy but limited because basic blocks are small.**
-> **Use global scheduling: loop unrolling and software pipelining.**
+**New displacement = old displacement − how far the register moved** = 4 − 8 = −4.
 
-> ⚠️ **The displacement change is the exam-relevant detail.** Moving `S.S` *after* `ADDI R1,R1,#8`
-> means R1 has already advanced by 8 — so the store's offset must change from `#4(R1)` to
-> `#-4(R1)` to still address the same location. **Reordering changed the meaning, and the compiler
-> had to repair it.** That repair is what "WAR hazard on R1" refers to.
+The slide calls this a **"WAR hazard on R1"**: the store *reads* R1, then `ADDI` *writes* it. Moving the store below `ADDI` flips that order, so the compiler must repair it.
+
+> ⚠️ "WAR is impossible" (§4) is about the **pipeline**, which never reorders. Here the **compiler** is reordering, so the compiler has to watch for WAR itself.
+
+### Limits
+
+- **The branch penalty can't be fixed locally:** the branch is the last instruction, so there's nothing left in the block to put after it. Options: move the branch to the top of the loop, or use a **delayed branch** (the instruction right after a branch always runs, so the compiler puts something useful there).
+- **Basic blocks are small** (here, 8 instructions). Even after reordering, the store still stalls 2 cycles. → We need **global scheduling: loop unrolling and software pipelining.**
 
 ---
 
 ## 8. Loop unrolling
 
-Three transformations applied in sequence (slide 13):
+**The idea:** do **two iterations per trip** through the loop. That gives the compiler more independent instructions to fill waits with, and the loop bookkeeping (pointer moves, count down, branch) runs once per two numbers instead of once per number.
 
-### Step 1 — unroll twice
-
-> **Copy loop twice, remove instructions, adjust displacements**
+### Step 1: unroll (copy the body)
 
 ```asm
-L.S   F0,0(R1)        L.S   F0,#4(R1)
-L.S   F1,0(R2)        L.S   F1,#4(R2)
-ADD.S F2,F1,F0        ADD.S F2,F1,F0
-S.S   F2,0(R1)        S.S   F2,#4(R1)
-                      ADDI  R1,R1,#8
-                      ADDI  R2,R2,#8
-                      SUBI  R3,R3,#2
-                      BNEZ  R3,Loop
+L.S   F0,0(R1)      ┐
+L.S   F1,0(R2)      │ number 1 (at pointer + 0)
+ADD.S F2,F1,F0      │
+S.S   F2,0(R1)      ┘
+L.S   F0,#4(R1)     ┐
+L.S   F1,#4(R2)     │ number 2 (at pointer + 4, the next number)
+ADD.S F2,F1,F0      │
+S.S   F2,#4(R1)     ┘
+ADDI  R1,R1,#8      ┐
+ADDI  R2,R2,#8      │ bookkeeping, now once per 2 numbers
+SUBI  R3,R3,#2      │
+BNEZ  R3,Loop       ┘
 ```
 
-One copy of the loop-control instructions (`ADDI`, `ADDI`, `SUBI`, `BNEZ`) now serves **two** iterations' worth of work. That overhead is immediately halved.
+### Step 2: rename the registers of the second copy
 
-### Step 2 — rename FP registers
+Both copies use F0, F1, F2. To mix the copies in Step 3, they need **separate registers**. Otherwise, with a[0] = 10, b[0] = 20, a[1] = 1, b[1] = 2, moving all four loads to the top gives:
 
-> **Remove WAW and WAR hazards by renaming**
+```
+L.S F0 ← 10,  L.S F1 ← 20,  L.S F0 ← 1 (overwrites!),  L.S F1 ← 2 (overwrites!)
+ADD.S F2 = 1 + 2 = 3        ← copy 1 should have got 10 + 20 = 30
+```
 
-Both copies used `F0, F1, F2`. The second copy is renamed to `F3, F4, F5`:
+So the second copy gets **F3, F4, F5**:
 
 ```asm
-L.S   F0,0(R1)
-L.S   F1,0(R2)
-ADD.S F2,F1,F0
-S.S   F2,0(R1)
 L.S   F3,#4(R1)      ← was F0
 L.S   F4,#4(R2)      ← was F1
 ADD.S F5,F3,F4       ← was F2,F1,F0
 S.S   F5,#4(R1)      ← was F2
-...
 ```
+This is **register renaming done by the compiler**: the same idea as hardware renaming (Lecture 2), done in software.
 
-> 📌 **This is register renaming done by the compiler, in software** — the same idea as the
-> hardware renaming in Lecture 2, applied to architectural registers at compile time. Without it,
-> the two copies collide on names and cannot be interleaved.
+### Step 3: schedule (loads up, stores down)
 
-### Step 3 — schedule
+```
+Cycle:            1   2   3   4   5   6   7   8   9   10  11  12  13  14  15  16  17
+L.S   F0,0(R1)    IF  ID  EX  ME  WB
+L.S   F1,0(R2)        IF  ID  EX  ME  WB
+L.S   F3,#4(R1)           IF  ID  EX  ME  WB
+L.S   F4,#4(R2)               IF  ID  EX  ME  WB
+ADD.S F2,F1,F0                    IF  ID  FP1 FP2 FP3 FP4 FP5 ME  WB
+ADD.S F5,F3,F4                        IF  ID  FP1 FP2 FP3 FP4 FP5 ME  WB
+SUBI  R3,R3,#2                            IF  ID  EX  ME  WB
+ADDI  R1,R1,#8                                IF  ID  EX  ME  WB
+ADDI  R2,R2,#8                                    IF  ID  EX  ME  WB
+S.S   F2,#-8(R1)                                      IF  ID  EX  ME  WB
+S.S   F5,#-4(R1)                                          IF  ID  EX  ME  WB
+BNEZ  R3,Loop                                                 IF  ID  EX
+(wrong)                                                           IF  ID  ✗
+(wrong)                                                               IF  ✗
+L.S F0 next trip                                                          IF  ID  EX
+```
+**No `ID*` anywhere.** Checking each dependency:
 
-> **Move loads up, move stores down, adjust displacements**
+| Who | Needs | Ready at end of | Needed at start of | OK? |
+|---|---|---|---|---|
+| 1st add | F1 | C5 (ME) | C7 (FP1) | ✅ |
+| 2nd add | F4 | C7 (ME) | C8 (FP1) | ✅ just in time |
+| 1st store | F2 | C11 (FP5) | C12 (EX) | ✅ just in time |
+| 2nd store | F5 | C12 (FP5) | C13 (EX) | ✅ just in time |
 
-| Instruction | basic | super |
-|---|---|---|
-| `L.S F0,0(R1)` | (1) | (1) |
-| `L.S F1,0(R2)` | (1) | (1) |
-| `L.S F3,#4(R1)` | (1) | (1) |
-| `L.S F4,#4(R2)` | (1) | (1) |
-| `ADD.S F2,F1,F0` | (1) | (2) |
-| `ADD.S F5,F3,F4` | (1) | (2) |
-| `SUBI R3,R3,#2` | (1) | (1) |
-| `ADDI R1,R1,#8` | (1) | (1) |
-| `ADDI R2,R2,#8` | (1) | (1) |
-| `S.S F2,#-8(R1)` | **(1)** | (1) |
-| `S.S F5,#-4(R1)` | **(1)** | (1) |
-| `BNEZ R3,Loop` | (3) | (4) |
+**14 clocks per trip = 7 per original iteration** → speedup 15/7 = **2.14**.
 
-> **Total time (basic): 14 clocks or 7 clocks per iteration of original loop.**
-> **Speedup: 15/7 = 2.14**
+**Store displacements:** the stores now run after `ADDI R1,R1,#8`. With R1 = 1000, the two numbers belong at 1000 and 1004. R1 is 1008 by then, so `#-8(R1)` = 1000 and `#-4(R1)` = 1004.
 
-All four loads are hoisted to the top, so by the time the adds run their operands are ready; the stores are pushed to the bottom, so by then the adds have finished. **Every stall is filled with useful work from the other iteration.**
+The slide's **"super"** column is the same code on the super-pipelined machine (§5): each add waits 1 cycle and the branch costs 4. Counting the same way gives 17 clocks per trip (8.5 per number). *(The 17 is my count; the slide doesn't give the total.)*
+
+| Version | Clocks per number |
+|---|---|
+| Original | 15 |
+| Local scheduling | 12 |
+| Unrolled + renamed, *not* scheduled | 24 / 2 = 12 (only the bookkeeping saving) |
+| **Unrolled + renamed + scheduled** | **14 / 2 = 7** |
 
 ### Name dependence (slide 14)
 
-> **Two instructions use the same name but no flow of information**
-> - **Not a true data dependence, but is a problem when reordering instructions**
-> - **Anti-dependence:** instruction *j* writes a register or memory location that instruction *i* reads
->   - Initial ordering (*i* before *j*) must be preserved
-> - **Output dependence:** instruction *i* and instruction *j* write the same register or memory location
->   - Ordering must be preserved
->
-> **To resolve, use register renaming techniques**
+- **True dependence (RAW):** a value really **flows** from one instruction to the next (the store needs the sum). It can't be removed, only waited for.
+- **Name dependence:** two instructions just **share a register name**, but no value flows between them. It's removed by **renaming**.
 
-| Deck 02's name | This deck's name | Pattern |
-|---|---|---|
-| **WAR** | **anti-dependence** | j writes what i reads |
-| **WAW** | **output dependence** | i and j write the same place |
-| **RAW** | *(true data dependence)* | j reads what i wrote — **not removable** |
+| Old name (deck 02) | This deck's name | Pattern | Example from Step 1 |
+|---|---|---|---|
+| **WAR** | **anti-dependence** | j writes what i reads | copy 1's add reads F0, then copy 2's load writes F0 |
+| **WAW** | **output dependence** | i and j write the same place | both copies' adds write F2 |
+| **RAW** | true data dependence | j reads what i wrote | not removable |
 
-> ⚠️ Note he says *"a register **or memory location**"*. Name dependences exist on memory too, not
-> just registers — which is why dynamic scheduling needs load/store queues.
+> ⚠️ The slide says "a register **or memory location**". Name dependences happen on memory too, and memory can't be renamed easily. That's why dynamic scheduling later needs load/store queues.
 
 ### Limitations (slide 15)
 
-> - **Works well if loop iterations are independent**
-> - **Problem with loop-carried RAW dependency**
->   ```c
->   for (i = 5; i < 100; i++)
->       A[i] := a[i-5] + b[i];
->   ```
->   - **Recurrence with distance 5 iterations**
->   - **Unroll up to 4 times**
->   - **5 times ⟹ loop-carried dependency limits code motion**
-> - **Consumes architectural registers due to renaming**
-> - **Code expansion** — affects instruction-cache and memory
-> - **Problem when the number of iterations is unknown at compile time**
+**1. Loop-carried dependence:**
+```c
+for (i = 5; i < 100; i++)
+    A[i] := a[i-5] + b[i];      // A and a are the same array (Pascal)
+```
+Iteration i reads a[i−5], which iteration i−5 wrote. Iterations 5–9 only read a[0]–a[4] (already there), so they're independent. Iteration 10 reads a[5], which iteration 5 wrote. **Distance = 5.**
 
-**[note] The recurrence distance.** `a[i]` depends on `a[i-5]`, so iterations *i* and *i−5* are dependent but iterations *i* … *i+4* are mutually independent. You may unroll **up to 4** copies freely; the 5th copy collides with the 1st.
+So any 5 consecutive iterations (i … i+4) are independent and can be mixed freely. The **6th** copy (i+5) would depend on the 1st.
 
-**Why unknown trip count is a problem:** unrolling by 4 needs the iteration count to be a multiple of 4. If it isn't known at compile time, the compiler must emit an extra "remainder" loop — more code, more branches.
+> ⚠️ The slide says "**unroll up to 4 times**; 5 times ⟹ dependency limits code motion". That matches if "unroll 4 times" means **4 extra copies + the original = 5 copies**. Saying "4 copies, the 5th collides" is off by one. Check which way the professor counts.
+
+**2. Uses up registers:** each copy needs its own. 2 copies used 6 FP registers; 8 copies would need 24.
+
+**3. Code gets bigger:** it may no longer fit in the instruction cache, which slows down fetching.
+
+**4. Unknown number of iterations:** unrolling by 4 with 103 iterations → 25 trips cover 100, and 3 are left over. If the count isn't known at compile time, the compiler must add a **leftover loop**: more code, more branches.
 
 ---
 
 ## 9. Software pipelining
 
-> **Original loop is translated into pipelined loop** — pipeline dependent instructions in **different iterations**.
->
-> Since the `ADD.S` is the **long latency** operation, we can pipeline the two loads and the `ADD.S` **with the store**.
+**The idea:** each trip through the loop **saves the previous number's answer**, then **loads and adds the next number**. The save never waits, because the sum it saves was started a whole trip earlier. It's the same single pipeline, one instruction entering per cycle; **only the order of the code changes.**
 
-The idea: instead of unrolling (which copies the body), **re-stage** the loop so that each new iteration of the transformed loop does the *store* of iteration *k*, the *loads* of iteration *k+1*, and the *add* of iteration *k+1* — all of which are independent.
+> 💡 A dishwasher: every time you go to it, unload the clean batch from last time, then load and start the new batch, and walk away. You never stand there waiting for it to finish.
+
+### The actual instruction sequence, for 3 numbers
+
+```
+   ── prologue (before the loop) ──
+ 1  load a #1
+ 2  load b #1
+ 3  count down
+ 4  add #1
+ 5  move pointer a
+ 6  move pointer b
+   ── loop, 1st trip ──
+ 7  save #1          ← #1's add started back on line 4
+ 8  load a #2
+ 9  load b #2
+10  count down
+11  add #2
+12  move pointer a
+13  move pointer b
+14  go back to top
+   ── loop, 2nd trip ──
+15  save #2          ← #2's add started back on line 11
+16  load a #3
+17  load b #3
+18  count down
+19  add #3
+20  move pointer a
+21  move pointer b
+22  go back? (counter is 0 → no)
+   ── epilogue (after the loop) ──
+23  save #3
+```
+- **Prologue:** the first trip has no previous answer to save, so number 1's loads and add go before the loop.
+- **Epilogue:** after the last trip, the last answer still needs saving.
+
+### The slide's diagonal table (slide 16)
 
 | | O_ITE1 | O_ITE2 | O_ITE3 | O_IT4 |
 |---|---|---|---|---|
@@ -555,149 +707,184 @@ The idea: instead of unrolling (which copies the body), **re-stage** the loop so
 | **P_ITE3** | — | — | S.S F2 | L.S F0 · L.S F1 · ADD.S F2 |
 | **Epilogue** | | | | S.S F2 |
 
-> **Note that exactly the same operations are executed in exactly the same order in both the original loop and the pipelined loop. The code is simply reorganized.**
+> ⚠️ This is a **plan**, not a timing chart. Nothing in a row runs at the same time: each row is one trip of the new loop, executed one instruction after another. **Read a row** = what one trip does. **Follow a diagonal** = one original iteration, still in order, just split across two trips.
 
-Read the table **by row** and you see the new loop body; read it **by column** and you see the original iterations, intact and in order. Each diagonal is one original iteration, spread across time.
+### The code (slide 17)
 
-### The resulting code (slide 17)
+```asm
+Prologue:  L.S   F0,0(R1)
+           L.S   F1,0(R2)
+           SUBI  R3,R3,#1
+           ADD.S F2,F1,F0
+           ADDI  R1,R1,#4
+           ADDI  R2,R2,#4
+Loop:      S.S   F2,#-4(R1)    ; save the PREVIOUS number (pointer already moved, so −4)
+           L.S   F0,0(R1)      ; load the NEXT number
+           L.S   F1,0(R2)
+           SUBI  R3,R3,#1
+           ADD.S F2,F1,F0      ; add the NEXT number
+           ADDI  R1,R1,#4
+           ADDI  R2,R2,#4
+           BNEZ  R3,Loop
+Epilogue:  S.S   F2,#-4(R1)    ; save the LAST number
+```
+(Here each trip handles one number of 4 bytes, so the pointers move by 4 and the counter by 1.)
 
-| | Instruction | Clocks |
-|---|---|---|
-| **Prologue:** | `L.S F0,0(R1)` · `L.S F1,0(R2)` · `SUBI R3,R3,#1` · `ADD.S F2,F1,F0` · `ADDI R1,R1,#4` · `ADDI R2,R2,#4` | |
-| **Loop** | `S.S F2,#-4(R1)` | (1) |
-| | `L.S F0,0(R1)` | (1) |
-| | `L.S F1,0(R2)` | (1) |
-| | `SUBI R3,R3,#1` | (1) |
-| | `ADD.S F2,F1,F0` | (1) |
-| | `ADDI R1,R1,#4` | (1) |
-| | `ADDI R2,R2,#4` | (1) |
-| | `BNEZ R3,Loop` | (3) |
-| **Epilogue** | `S.S F2,#-4(R1)` | |
+```
+Cycle:            1   2   3   4   5   6   7   8   9   10  11  12  13  14  15
+S.S   F2,#-4(R1)  IF  ID  EX  ME  WB
+L.S   F0,0(R1)        IF  ID  EX  ME  WB
+L.S   F1,0(R2)            IF  ID  EX  ME  WB
+SUBI  R3,R3,#1                IF  ID  EX  ME  WB
+ADD.S F2,F1,F0                    IF  ID  FP1 FP2 FP3 FP4 FP5 ME  WB
+ADDI  R1,R1,#4                        IF  ID  EX  ME  WB
+ADDI  R2,R2,#4                            IF  ID  EX  ME  WB
+BNEZ  R3,Loop                                 IF  ID  EX
+(wrong)                                           IF  ID  ✗
+(wrong)                                               IF  ✗
+S.S next trip                                             IF  ID  EX  ME  WB
+```
+- The add gets b in time (`SUBI` fills the gap, as in §7).
+- The sum is ready at the end of C11, and the **next trip's** save uses it in C13. In between: the two `ADDI`s, the branch, **and the branch's 2 wasted cycles**. The branch penalty now overlaps the add's wait instead of adding to it.
+- **10 clocks per number** → speedup 15/10 = **1.5**.
 
-> **No stall, no code expansion, no register renaming**
-> **Use both: first loop unrolling then software pipelining**
+**Check with 100 numbers** (R3 starts at 100): the prologue loads and adds #1; the loop runs 99 times (saves #1–99, loads and adds #2–100); the epilogue saves #100. Every number is handled exactly once. ✅
 
-**[note] The arithmetic.** The loop body is 7 instructions at 1 clock plus a 3-clock branch = **10 clocks per iteration**, against the original 15 → speedup **1.5**. Less than unrolling's 2.14 *on its own*, but it costs **no code expansion and no extra registers** — which is why the slide says to use both together.
+**No renaming needed:** in each trip, the save *reads* the old F2 before the add *writes* the new F2. One set of registers is enough.
 
 ### Unrolling vs software pipelining
 
 | | Loop unrolling | Software pipelining |
 |---|---|---|
-| Mechanism | **copy** the body N times | **re-stage** the body across iterations |
-| Code size | **grows** | unchanged |
-| Register pressure | **grows** (renaming) | unchanged |
-| Loop overhead | **amortised** over N iterations | unchanged |
-| Needs trip count known? | effectively yes | no |
-| Extra code | — | **prologue + epilogue** |
+| How | copy the body N times | split each iteration across two trips |
+| Fixes | bookkeeping cost (shared by N numbers) | waiting (no stalls) |
+| Code size | grows | same (+ a small prologue/epilogue) |
+| Extra registers | yes (renaming) | no |
+| Must know the iteration count? | effectively yes | no |
+| Running example | 7 clocks/number | 10 clocks/number |
+
+Software pipelining removes all the waiting, but each number still pays for its own bookkeeping (2 moves + count down + 3-clock branch = 6 of the 10 clocks). Unrolling shares that cost. **So use both: unroll first, then software-pipeline the bigger body.**
 
 ---
 
 ## 10. Strengths and weaknesses of static pipelines
 
-> **Strengths**
-> - **Hardware simplicity:** clock rate advantage over more complex designs
-> - **Very predictable:** static performance predictions are reliable
-> - **Compiler has a global view of the code:** e.g. optimize loops
-> - **Power/energy advantage**
->
-> **Weaknesses**
-> - **Dynamic events** (e.g. cache misses, conditional branches)
-> - **No mechanism to deal with cache misses**
->   - Freeze the processor on a miss
->   - **Only one access at a time → no tolerance for miss latency**
-> - **Lack of dynamic information**
->   - **Memory addresses → this limits code motion**
-> - **Compilers are complex**
->   - Optimize performance vs. enforce execution correctness
+**Strengths**
+- **Simple hardware** → faster clock, less power and energy.
+- **Predictable:** performance can be worked out in advance.
+- **The compiler sees the whole program** (for example, it can optimise a whole loop).
 
-> 📌 **"Memory addresses → limits code motion"** is the killer. The compiler usually cannot prove
-> that `A[i]` and `B[j]` are different locations, so it must **conservatively** keep the load after
-> the store. The hardware, at run time, knows both addresses exactly — and can reorder freely.
-> **That information asymmetry is the whole case for dynamic scheduling.**
+**Weaknesses**
+- **Can't react to run-time events** (cache misses, branch outcomes). On a cache miss the whole processor freezes, and only one memory access can happen at a time.
+- **No run-time information, especially memory addresses** → limits how far the compiler can move code.
+- **Compilers get complex:** they must speed things up without breaking correctness.
+
+> 📌 **Why memory addresses are the killer:**
+> ```
+> S.S  F2, 0(R1)
+> L.S  F6, 0(R5)     ← can this load move above the store?
+> ```
+> Only if R1 ≠ R5. The compiler usually can't prove that, so it must keep the order "just in case". The hardware sees the actual values at run time and can reorder safely. **That information gap is the main argument for dynamic scheduling.**
 
 ---
 
 ## 11. Is superscalar good enough?
 
-> A superscalar processor can fetch, decode, execute and retire instructions in parallel.
-> - **Can execute only independent instructions in parallel**
->
-> **But … adjacent instructions are usually dependent**
-> - **The utilization of the second pipe is usually low**
-> - There are algorithms in which both pipes are highly utilized
->
-> **Solution: out-of-order execution**
-> - **Execute instructions based on "data flow" rather than program order**
-> - **Still need to keep the semantics of the original program**
+**The idea:** an in-order superscalar only fills its second slot when the *next* instruction happens to be independent. Neighbouring instructions usually depend on each other, so the second pipe sits idle much of the time.
 
-The problem with **in-order** superscalar: the pair must be adjacent *and* independent. Real code rarely obliges — so the second slot sits empty most cycles, and you paid for hardware you aren't using.
+**The fix is out-of-order execution:** run instructions in **data-flow order** (as soon as their inputs exist), not program order, while still producing the same results as the original program.
 
-> 📌 **"Data flow rather than program order"** is the core idea of the rest of the deck. Program
-> order is an *accident of how you wrote it*; data flow is the **true** constraint. Execute as soon
-> as your inputs exist.
+> 📌 Program order is just how you happened to write the code. Data flow (who needs whose result) is the real constraint.
 
 ---
 
 ## 12. Out-of-order execution and dynamic scheduling
 
-> **Make use of cycles that would otherwise be wasted** by a certain type of costly delay. Most modern CPU designs include support for out of order execution.
->
-> The key concept of OoO processing is to allow the processor to **avoid a class of stalls that occur when the data needed to perform an operation are unavailable**.
+**The idea:** the **hardware** lets ready instructions go **past** stuck ones while the program runs. Results are still made official **in program order**, so from the outside it looks like nothing was reordered.
 
-> **Execution steps** *(instructions are dynamically scheduled based on the availability of resources / operands readiness)*:
-> 1. Instruction **fetch**
-> 2. Instruction **dispatch to an instruction queue** (also called instruction buffer or **reservation stations**)
-> 3. The instruction **waits in the queue until its input operands are available**. The instruction is allowed to **leave the queue before earlier, older instructions**
-> 4. The instruction is **issued** to the appropriate functional unit and **executed**
-> 5. The **results are queued**
-> 6. **Only after all older instructions have their results written back to the register file**, then this result is **written back** to the register file. This is called the **graduation** or **retire** stage
+> 💡 A restaurant with a set menu. Orders are pinned on a board as they arrive. Any cook takes any order whose ingredients are ready, even a later one. Finished dishes wait on a counter and are **served in menu order**. The customer never knows the kitchen cooked out of order.
 
-> 🔑 **Step 6 is the one that makes the whole thing legal.** Instructions *execute* out of order but
-> *retire* in order. The architectural state only ever advances in program order, so from outside
-> the machine nothing has been reordered at all. (Lecture 2 §2: architectural state vs physical state.)
+### The 6 steps
+
+| # | Step | In order? | Restaurant |
+|---|---|---|---|
+| 1 | **Fetch** | ✅ | order arrives |
+| 2 | **Dispatch** to a queue (instruction buffer / **reservation stations**) | ✅ | pin it on the board |
+| 3 | **Wait** until inputs are ready; **may leave before older instructions** | ❌ | wait for ingredients |
+| 4 | **Issue and execute** in a functional unit | ❌ | a cook takes it |
+| 5 | **Result queued** (not official yet) | ❌ | dish on the counter |
+| 6 | **Retire / graduate:** write to the real registers only after all older instructions have | ✅ | serve in menu order |
+
+> 🔑 **Step 6 makes it legal.** The registers the program sees (the **architectural state**) only ever change in program order. All the out-of-order work happens in temporary storage (the **physical state**, Lecture 2).
+
+### Example
+
+```
+1  L.S   F0, 0(R1)     ; load
+2  ADD.S F2, F0, F4    ; needs F0
+3  S.S   F2, 0(R1)     ; needs F2
+4  ADDI  R2, R2, #4    ; needs nothing
+5  SUBI  R3, R3, #1    ; needs nothing
+```
+
+The cycle in which each one starts its real work (EX / FP1):
+
+| Instruction | In-order pipeline | Out-of-order |
+|---|---|---|
+| 1 load | 3 | 3 |
+| 2 add | 5 | 5 |
+| 3 store | 10 | 10 |
+| 4 ADDI | **11** (stuck behind the store) | **6** |
+| 5 SUBI | **12** (stuck behind the store) | **7** |
+
+*(The out-of-order column assumes one instruction is fetched per cycle and each one starts as soon as its inputs are ready.)*
+
+This is exactly what local scheduling did by hand (moving `SUBI` up), but now **the hardware does it on unmodified code**. There's also no `#-4` displacement fix: the program still says the store comes before `ADDI R1`, and hardware renaming (§13) makes sure the store still sees the old R1.
 
 ### Dynamic scheduling (slide 21)
 
-> **Rearrange order of instructions to reduce stalls while maintaining data flow**
->
-> **Dynamic scheduling implies:** out-of-order execution · out-of-order completion
->
-> **Advantages:**
-> - **Compiler doesn't need to have knowledge of microarchitecture**
-> - **Handles cases where dependencies are unknown at compile time**
->
-> **Disadvantage:**
-> - **Substantial increase in hardware complexity**
-> - **Complicates exceptions**
+Rearrange the order of instructions to reduce stalls while keeping the data flow. It implies **out-of-order execution** and **out-of-order completion**.
 
-### Dynamic instruction scheduling (slide 22)
+| Advantages | Disadvantages |
+|---|---|
+| The compiler doesn't need to know the chip's latencies, so the same code runs well on different chips | **Much more hardware** (queues, tracking, buffers) → chip area and power |
+| Handles things unknown at compile time: whether a load misses the cache (1 cycle or 100?), whether two addresses are the same | **Exceptions get complicated** |
 
-> Static pipelines can only exploit **the parallelism exposed to it by the compiler**
-> - Instructions are **stalled in ID** until they are hazard-free and then scheduled for execution
-> - The compiler strives to limit the number of stalls in ID
-> - **However compiler is limited in what it can do**
->
-> **Potentially there is a large amount of ILP to exploit (across 100s of instructions)**
-> - **Must cross basic block boundaries** (10s of branches)
-> - **Data-flow order (dependencies) — not thread order**
->
-> **Dynamic instruction scheduling:**
-> - **Separate decoding from scheduling**
-> - Decode instruction then **dispatch them in queues** where they wait to be scheduled until input operands are available
->
-> **No stall at decode for data hazard — only structural hazards**
-> - All data hazards — **RAW, WAW, and WAR** — are now possible **both on memory and registers** and must be solved
-> - **Execute beyond conditional branches — speculative execution**
+### Slide 22 in plain words
 
-> ⚠️ **WAR is back.** In the static pipeline, reads happened in ID so WAR was impossible. Once
-> instructions can sit in a queue and read their operands late, a later instruction's write can
-> overtake an earlier instruction's read. **All three hazards are live again** — and on memory too.
+- A static pipeline can only use the parallelism the **compiler exposed**. A stuck instruction sits in ID and blocks everything.
+- There is lots of parallelism available **across hundreds of instructions**, but finding it means looking **past branches** (tens of them).
+- **Data-flow order, not program ("thread") order:** an instruction runs when its inputs are ready.
+- **Decoding is separated from scheduling:** decode just puts the instruction in a queue and moves on. It only stops if the queue is **full** (structural), never for data.
+- **Execute past branches by guessing → speculative execution** (§14).
+
+### ⚠️ WAR and WAW are back
+
+In the static pipeline, reads happened early (in ID), so WAR was impossible. Now an instruction can **sit in the queue and read late** while a later instruction **runs early**:
+
+```
+1  ADD.S F2, F0, F4    ; reads F4, but waiting for F0 (slow load)
+2  L.S   F4, 0(R3)     ; writes F4, ready now
+```
+**WAR:** if #2 overwrites F4 first, #1 later reads the wrong F4.
+
+```
+1  ADD.S F2, F0, F4    ; writes F2, but waiting
+2  L.S   F2, 0(R3)     ; writes F2, runs first
+```
+**WAW:** #1 finishes last and leaves its older F2 behind.
+
+**Memory too:** a waiting store to `0(R1)` and a ready load from `0(R5)`. If R1 = R5 and the load goes first, it reads the old value.
+
+Fixes: **hardware register renaming** (for WAR/WAW) and **load/store queues** (for memory).
 
 ---
 
 ## 13. Tomasulo's algorithm
 
-Robert Tomasulo's scheme, from the IBM 360/91 (1967), is the canonical dynamic-scheduling design.
+**The idea:** IBM 360/91, 1967, and still the core of modern CPUs. A waiting instruction doesn't wait for a *register*; it waits for a **tag** (the name of the station that will produce the value). Every result is **broadcast once** on the **Common Data Bus (CDB)**, and everyone waiting for that tag grabs it. Waiting on tags instead of register names is **automatic register renaming**, which removes WAR and WAW.
+
+> 💡 A kitchen with tickets and a loudspeaker. A cook who needs sauce that isn't made yet writes "waiting for ticket 7". When ticket 7 is done, the loudspeaker announces "Ticket 7: here's the sauce!", and everyone waiting for ticket 7 grabs it at once. The shelf labels (registers) also say which ticket they're waiting for.
 
 ```mermaid
 flowchart TB
@@ -722,141 +909,168 @@ flowchart TB
     CDB --> FREG
 ```
 
-The deck splits it into **FRONT-END** and **BACK-END**, and notes the issue queues are **"aka reservation stations in original Tomasulo."**
+| Term | Meaning |
+|---|---|
+| **IFQ** | instruction fetch queue: a first-in-first-out line of fetched instructions |
+| **Reservation station (RS) / issue queue** | a waiting spot next to a functional unit (named Add1, Load1, …) |
+| **Tag** | the name of the RS that will produce a value |
+| **CDB** | one shared bus; each result is announced on it as (tag, value) |
+| **Register status** | for each register: "ready", or "newest value is coming from tag X" |
 
-> **Front-end**
-> - Instructions are **fetched**
-> - Stored in a FIFO queue called **"instruction fetch queue" (IFQ)**
-> - When an instruction reaches the top of the IFQ it is:
->   - **Decoded and dispatched to an issue queue** (integer/branch, memory, or floating-point)
->   - **Even if some of its input operands are not ready** (being computed)
->
-> **Back-end**
-> - Instructions in issue queues **wait for their input (register) operands**
-> - Once register operands are ready instructions **can be scheduled for execution, provided they will not conflict for the CDB (common data bus) or their functional unit**
-> - Instructions execute in their functional unit and their **result is put on the CDB**
-> - **All instructions in queues and all registers in both register files "watch" the CDB and grab the value they are waiting for**
+**Front-end (in order):** fetch into the IFQ → decode → dispatch to an issue queue (integer/branch, memory or FP), **even if its inputs aren't ready yet**.
 
-> 🔑 **The CDB is the heart of it.** A result is **broadcast once**, tagged, and everyone who was
-> waiting for that tag grabs it simultaneously. That broadcast-and-match is what replaces the
-> register file as the communication mechanism — and it is also **implicit register renaming**,
-> because instructions wait on *tags*, not on register names.
+**Back-end (out of order):** wait in the RS, listening to the CDB → run when all inputs are in and the unit and CDB are free → announce (tag, value) on the CDB → every RS and register waiting for that tag grabs it.
+
+### Walkthrough
+
+```
+1  L.S   F0, 0(R1)     ; memory at R1 holds 5
+2  ADD.S F2, F0, F4    ; F4 = 10 at the start
+3  L.S   F4, 0(R2)     ; memory at R2 holds 7     ← WAR with #2 (on F4)
+4  ADD.S F2, F4, F6    ; F6 = 1                   ← WAW with #2 (on F2)
+```
+Correct final result (in plain program order): F0 = 5, F4 = 7, **F2 = 7 + 1 = 8**.
+
+**Issue (in order):**
+
+| # | Goes to | Inputs | Register status after |
+|---|---|---|---|
+| 1 | Load1 | address R1 | F0 ← Load1 |
+| 2 | Add1 | F0: **wait for Load1** · F4: ready, **copy 10 now** | F2 ← Add1 |
+| 3 | Load2 | address R2 | F4 ← Load2 |
+| 4 | Add2 | F4: **wait for Load2** · F6: ready, **copy 1** | F2 ← **Add2** (replaces Add1) |
+
+**Execute (out of order), with Load1 slow:**
+
+| CDB announces | Who grabs it |
+|---|---|
+| (Load2, 7) | Add2 → now ready · register F4 = 7 |
+| (Add2, 8) | register F2 = 8 |
+| (Load1, 5) | Add1 → now ready · register F0 = 5 |
+| (Add1, 15) | **F2 ignores it**: it's waiting for Add2, not Add1 |
+
+Final: F0 = 5, F4 = 7, F2 = 8 ✅, even though #3 and #4 ran before #1 and #2.
+- **WAR solved:** Add1 copied F4 = 10 at issue, so Load2's later write doesn't affect it.
+- **WAW solved:** F2 only accepts the newest writer's tag (Add2).
 
 ### The three steps (slide 25)
 
-> **Issue**
-> - Get next instruction from FIFO queue
-> - **If available RS, issue the instruction to the RS with operand values if available**
-> - If operand values not available, stall the instruction
->
-> **Execute**
-> - When operand becomes available, **store it in any reservation stations waiting for it**
-> - When **all operands are ready, issue the instruction**
-> - **Loads and stores maintained in program order through effective address**
-> - **No instruction allowed to initiate execution until all branches that precede it in program order have completed**
->
-> **Write result**
-> - **Write result on CDB into reservation stations and store buffers**
-> - (Stores must wait until **address and value** are received)
+1. **Issue:** take the next instruction from the queue. If there's a **free RS**, put it there, with values where they're ready and tags where they're not. No free RS → issue stops (a **structural** stall, never a data one).
+   > ⚠️ The slide's "if operand values not available, stall the instruction" means it **waits inside its RS**. Later instructions keep issuing behind it.
+2. **Execute:** grab values from the CDB as they appear; run when all inputs are in. Loads and stores compute their **effective address** (the real address, e.g. R1 + 0) and are kept in program order for the same address. **No instruction may start until every earlier branch is resolved** (speculation removes this limit next).
+3. **Write result:** broadcast on the CDB to the RSs and store buffers. A store needs **both** its address and its value before it can write.
 
-**[note]** Note the Issue step stalls on **structural** grounds (no free reservation station), not on data. And the last Execute bullet — no execution past an unresolved branch — is the restriction that **hardware speculation removes next.**
+> ⚠️ **What original Tomasulo lacks:** in the walkthrough, F2 = 8 was written to the register **before #1 had finished**. Results go into the registers as soon as they're ready, not in program order, so the CPU can't stop cleanly after an exception. The **reorder buffer** (§14) fixes that.
 
 ---
 
 ## 14. Hardware-based speculation
 
-> **Execute instructions along predicted execution paths but only commit the results if prediction was correct.**
->
-> **Instruction commit:** allowing an instruction to update the register file **when instruction is no longer speculative**.
->
-> **Need an additional piece of hardware to prevent any irrevocable action until an instruction commits** — i.e. updating state or taking an exception.
+**The idea:** don't wait at branches. **Guess** the branch, run ahead on the guessed path, and keep every result **unofficial** in a **reorder buffer (ROB)**. Make results official (**commit**) in program order once the guess is confirmed; if the guess was wrong, **throw them away**.
 
-### The three ideas combined (slide 27)
+> 💡 A regular customer usually orders dessert, so the kitchen starts it early. It waits on the counter. If they order it, it's already ready: time saved. If not, throw it away. Nothing reaches the table until it's confirmed.
 
-> **Combination of 3 main ideas:**
-> 1. **Dynamic OoO instruction scheduling** (Tomasulo)
-> 2. **Dynamic branch prediction**, allowing instruction scheduling across branches
-> 3. **Speculative execution:** execute instructions **before all control/data dependencies are resolved**
+**Three ideas combined (slide 27):** (1) dynamic out-of-order scheduling (Tomasulo) · (2) **dynamic branch prediction** (guessing from what this branch did recently) · (3) **speculative execution** (running before control/data dependencies are resolved).
 
-> Hardware-based speculation uses a **data-flow approach**: instructions execute when their operands are available/predicted, **across predicted branches**.
->
-> **Key ideas:**
-> - **Separate the completion of instruction execution and the commit of its result**
-> - **Between completion and commit results are speculative**
-> - **Commit results to registers and storage in process order**
->
-> **We need to add the following to Tomasulo:**
-> - **Branch prediction**
-> - **Temporary storage for speculative results**
-> - **Mechanism to roll-back execution when speculation fails**
+**Added to Tomasulo:** branch prediction · temporary storage for speculative results (**the ROB**, a queue kept in program order) · a way to **roll back** (flush) after a wrong guess.
 
-**[note]** That "temporary storage" is the **reorder buffer (ROB)** in standard terminology — a FIFO holding completed-but-not-committed results in program order. Commit pops from its head; a misprediction flushes everything behind the bad branch. It is also what makes **precise exceptions** possible, which is why deck 02's outline listed them.
+| Step | What happens | Order |
+|---|---|---|
+| 1. Issue | into an RS **and** a slot at the back of the ROB | in order |
+| 2. Execute | when inputs are ready | out of order |
+| 3. Write result (**complete**) | onto the CDB (others can use it right away) and into its ROB slot | out of order |
+| 4. **Commit** | at the front of the ROB: write to the real registers/memory | **in order** |
 
-> 📌 **Complete ≠ commit.** An instruction *completes* when its functional unit produces a value;
-> it *commits* when that value is allowed into the architectural state. The gap between the two is
-> where all the speculation lives.
+This is the "retire" step 6 from §12, which original Tomasulo was missing.
+
+### Walkthrough
+
+```
+1  LD    R4, 0(R1)      ; slow load
+2  BEQZ  R4, Skip       ; needs R4 → can't decide yet
+3  ADDI  R5, R5, #1     ; R5 = 5 → 6
+4  ADD.S F2, F4, F6     ; F2 = 0 → 5
+Skip:
+5  SUBI  R3, R3, #1
+```
+The predictor guesses **not taken**, so 3, 4 and 5 run while the load is still going. They **complete**, but their results sit in the ROB: the real registers still show **R5 = 5, F2 = 0**.
+
+- **Guess right** (R4 ≠ 0): commit 1, 2, 3, 4, 5 in order → R5 = 6, F2 = 5. Instructions 3–5 were already done: time saved.
+- **Guess wrong** (R4 = 0): commit 1 and 2, then **flush everything behind the branch** and refetch from `Skip`. R5 = 5 and F2 = 0, as if 3 and 4 never ran. Some time wasted, but **never a wrong answer**.
+
+### Nothing irreversible before commit
+
+- **Register writes** wait for commit (the old value would otherwise be lost).
+- **Stores** to memory wait for commit (other parts of the system could see the value).
+- **Exceptions** are only noted in the ROB slot and raised only if that instruction commits. A divide-by-zero on a wrongly guessed path simply disappears with the flush.
+
+**Precise exceptions for free:** if an instruction fails, everything before it has committed and everything after it is still in the ROB. Flush it, and the CPU stops in a clean state.
+
+> 📌 **Complete ≠ commit.** *Complete* = the unit produced the value (any order, still undoable). *Commit* = the value enters the official state (program order, final). All speculation lives in the gap between the two.
 
 ---
 
 ## 15. Multiple issue
 
-> **To achieve CPI < 1, need to complete multiple instructions per clock.**
->
-> **Solutions:**
-> - **Statically scheduled superscalar processors**
-> - **VLIW (very long instruction word) processors**
-> - **Dynamically scheduled superscalar processors**
+**The idea:** to get **CPI < 1** (IPC > 1), you must issue **several instructions per cycle**. The hard part is checking, inside one cycle, that the instructions in the same group don't depend on each other. That checking grows roughly with n², which caps how wide a core can go.
 
-### Combining it all (slide 28)
+| Design | Who finds independent instructions | Who checks hazards | Order |
+|---|---|---|---|
+| **Statically scheduled superscalar** (the 2-way machine, §6) | compiler | hardware (splits unsafe groups) | in order |
+| **VLIW** (§16) | compiler | nobody at run time | in order |
+| **Dynamically scheduled superscalar** | hardware | hardware | out of order |
 
-> **Modern microarchitectures: dynamic scheduling + multiple issue + speculation**
->
-> **Two approaches:**
-> - **Assign reservation stations and update pipeline control table in half clock cycles**
->   - Only supports **2 instructions/clock**
-> - **Design logic to handle any possible dependencies between the instructions**
->
-> **Issue logic is the bottleneck in dynamically scheduled superscalars.**
+**Modern CPUs = dynamic scheduling + multiple issue + speculation.**
 
-### What multiple issue requires (slide 30)
+### The problem inside a group
 
-> - **Examine all the dependencies among the instructions in the bundle**
-> - If dependencies exist in bundle, **encode them in reservation stations**
-> - Also need **multiple completion/commit**
-> - To simplify RS allocation: **limit the number of instructions of a given class that can be issued in a "bundle"** — i.e. one FP, one integer, one load, one store
+```
+ADD.S F2, F0, F4     ; writes F2
+MUL.S F6, F2, F8     ; reads F2  ← issued in the same cycle
+```
+One at a time, MUL.S would look up F2 and see "coming from Add1". In the same cycle, the register status **hasn't been updated yet**, so MUL.S would grab the **old** F2. The issue logic must compare the two instructions directly and hand MUL.S the tag Add1 ("**encode the dependence in the RS**"). It must also handle WAW inside the group, so the register status ends up pointing to the later writer.
 
-> 📌 **Why issue logic is the bottleneck.** To issue *n* instructions in one cycle you must check
-> every pair among them for dependences — that is **O(n²)** comparisons, all inside one clock
-> period. This is the hard scaling wall on issue width, and a direct reason the industry stopped
-> widening cores and started adding them. **This slide is the bridge back to the whole premise of
-> COE 502.**
+**Two approaches (slide 28):**
+1. **Half-cycle trick:** issue instruction 1 in the first half of the clock and instruction 2 in the second half, so instruction 2 sees the updated status. Only works for **2** per cycle.
+2. **Logic that checks every dependency in the group at once.** Works for any width, but grows fast:
+
+| Issue width n | Pairs to check: n(n−1)/2 |
+|---|---|
+| 2 | 1 |
+| 4 | 6 |
+| 8 | 28 |
+
+All of it inside one clock cycle → **issue logic is the bottleneck**.
+
+**What multiple issue needs (slide 30):**
+- check all dependencies inside the group, and encode them in the RSs;
+- **multiple completion and commit** per cycle (otherwise the ROB fills up), which also means several CDBs;
+- **limit each group to one of each type** (one FP, one integer, one load, one store), so each instruction goes to a different set of RSs and they never compete.
+
+> 📌 **The bridge to this course:** wider cores hit the n² issue wall, and real code rarely has 8+ independent instructions ready anyway. Add the clock-speed wall from §5, and the industry switched from bigger single cores to **more cores**: parallel processing.
 
 ---
 
 ## 16. VLIW processors
 
-> - **Package multiple independent operations into one instruction**
-> - **Independent functional units with no hazard detection**
-> - May have some forwarding to reduce latencies of operation
-> - **Compiler is responsible for dispatching/scheduling instructions**
->
-> **Example VLIW processor:**
-> - One integer instruction (or branch)
-> - Two independent floating-point operations
-> - Two independent memory references
-> - Each takes **16–24 bits**
-> - **Instruction size 112 – 168 bits**
->
-> **Must be enough parallelism in code to fill the available slots.**
+**The idea:** the **compiler** packs several independent operations into one **very long instruction**, one slot per functional unit. The hardware runs all the slots together with **no hazard checking at all**. It's **static scheduling** for a multiple-issue machine. (It appears after dynamic scheduling only because the deck groups these slides by multiple issue, §15.)
 
-> 🔑 **VLIW is the opposite bet from dynamic scheduling.** Dynamic scheduling spends transistors on
-> hardware that finds parallelism at run time. VLIW spends *nothing* — **no hazard detection at
-> all** — and makes the compiler guarantee that the operations in each bundle are independent. If
-> the compiler is wrong, the machine computes garbage; there is no interlock to save it.
+> 💡 A head chef writes a minute-by-minute plan for 5 cooks, who follow it blindly. An empty spot in the plan = an idle cook. If the plan is wrong, the dish comes out wrong: nobody checks. If one cook is held up, **all 5 stop** (lockstep).
+
+```
+┌──────────┬──────────┬──────────┬──────────┬────────────────┐
+│ Memory 1 │ Memory 2 │ FP op 1  │ FP op 2  │ Integer/branch │   ← one VLIW instruction
+└──────────┴──────────┴──────────┴──────────┴────────────────┘
+```
+- No hazard detection; maybe some forwarding.
+- The compiler is fully responsible for scheduling.
+- **The code must have enough parallelism to fill the slots.**
+
+> ⚠️ **Instruction size:** 5 slots × 16–24 bits = **80–120 bits**. The slide's 112–168 bits = 7 × (16–24), i.e. 7 slots, which doesn't match the 5-slot machine it describes. Check which the professor expects.
 
 ### VLIW code (slide 33)
 
-Loop unrolled **7 times**:
+`x[i] = x[i] + s` (s is in F2), unrolled 7 times. **Each row = one long instruction = one clock.**
 
 | Clock | MemOp1 | MemOp2 | FPOp1 | FPOp2 | Int/BROp |
 |---|---|---|---|---|---|
@@ -870,140 +1084,165 @@ Loop unrolled **7 times**:
 | 8 | S.D 24(R1),F20 | S.D 16(R1),F24 | | | |
 | 9 | S.D 8(R1),F28 | | | | BNE R1,R2,Clock1 |
 
-> **Problems:** Code size · Empty slots · Register pressure · Lockstep · Cost of branches
+The same table, simplified:
 
-Count the blanks in that table — roughly **40% of the slots are empty**, and each empty slot is still encoded in the instruction word. That's the **code size** problem and the **empty slots** problem in one picture. The register pressure is visible too: F0 through F28, 15 registers live at once, to unroll a loop seven times.
+| Clock | Mem 1 | Mem 2 | FP 1 | FP 2 | Int/branch |
+|---|---|---|---|---|---|
+| 1 | load #1 | load #2 | | | |
+| 2 | load #3 | load #4 | | | |
+| 3 | load #5 | load #6 | add #1 | add #2 | |
+| 4 | load #7 | | add #3 | add #4 | |
+| 5 | | | add #5 | add #6 | |
+| 6 | store #1 | store #2 | add #7 | | move pointer |
+| 7 | store #3 | store #4 | | | |
+| 8 | store #5 | store #6 | | | |
+| 9 | store #7 | | | | branch |
 
-**"Lockstep"** means all operations in a bundle must proceed together — if any one stalls (say a cache miss), **the whole bundle stalls**, because there is no hardware to let the others continue.
+**Follow number #1:** load at clock 1 → add at clock 3 → store at clock 6. The gaps are this example's latencies (load → add 2 clocks apart, add → store 3 clocks apart, shorter than the FP latency of 4 used earlier). Nothing checks them; the compiler simply leaves enough space.
 
-**[note]** VLIW succeeded in DSPs and embedded media processors, where workloads are regular and the compiler really can see everything. It failed in general-purpose computing (Intel's Itanium being the famous case), for exactly the reason slide 18 gave: the compiler cannot know memory addresses or cache behaviour in advance.
+**Pointer fix again:** `SUBI R1,R1,#56` (7 numbers × 8 bytes) runs in clock 6. The stores in that same instruction still see the old R1 (all slots read their inputs together), so their offsets are 0 and −8. The stores in clocks 7–9 see the new R1, so +56 is added to their offsets. E.g. number #3 lives at 1000 − 16 = 984; after the SUBI, R1 = 944, and `40(R1)` = 984 ✅.
+
+**Speed:** 7 numbers in 9 clocks ≈ **1.29 clocks per number**.
+
+### Problems: code size · empty slots · register pressure · lockstep · cost of branches
+
+- **Empty slots:** 45 slots, 23 used (7 loads + 7 adds + 7 stores + SUBI + BNE) → **22 empty, about half**. ⚠️ (Older versions of these notes said ~40%; the count is ~49%.)
+- **Code size:** empty slots still take up bits, on top of the 7× unrolling.
+- **Register pressure:** F0–F28 → 15 FP registers live at once.
+- **Lockstep:** one cache miss stalls the whole instruction and everything after it.
+- **Cost of branches:** one wasted clock now wastes 5 slots.
+
+> 💡 It looks like unrolling + software pipelining, but it's only unrolling + scheduling. Each trip starts with only loads (clocks 1–2) and ends with only stores (clocks 7–9). Software pipelining would fill those slots with the next/previous trip's work. Best possible: 14 memory operations ÷ 2 memory slots = **7 clocks** per trip instead of 9.
+
+| | VLIW | Dynamic (Tomasulo + ROB) |
+|---|---|---|
+| Finds parallelism | compiler, in advance | hardware, at run time |
+| Hazard hardware | none | lots |
+| Cost / power | low | high |
+| If the compiler is wrong | **wrong answers** | the hardware copes |
+| Cache misses, unknown addresses | everything stalls | other instructions continue |
+| New chip | often needs recompiling | the same code runs fine |
+
+**Worked:** DSPs and media chips (regular loops, predictable memory access). **Failed:** general-purpose CPUs (Intel **Itanium**), because the compiler can't know memory addresses or cache behaviour in advance (§10).
 
 ---
 
 ## 17. Vector processors
 
-> Vector processors are able to **execute instructions on entire vectors and not just on scalars.**
->
-> Instructions are of the type `addv v1, v2, v3`
-> - v1, v2, v3 are **vectors of scalars of same type and same length**
-> - They are specified by a **base address, a vector length and a stride** (memory operand), or they can be **vector registers**
->
-> The above instruction adds the corresponding scalar elements of v2 and v3 and puts the results in corresponding elements of v1: `V1[i] ← v2[i] + v3[i]`, for all i's
->
-> Vector length and stride may be held in **special control registers**.
+**The idea:** **one instruction does the same operation on a whole list** of numbers. `ADDV V1,V2,V3` = 64 additions. Fetch, decode and hazard checking happen **once** instead of 64 times, and the 64 operations are guaranteed independent.
 
-> **Vector machines existed well before superscalar processors.**
-> **They are still built for supercomputers for engineering/scientific computation.**
-> **Because of multimedia (streaming) applications they are reappearing in commodity markets (DSP).**
+> 💡 A spreadsheet: instead of typing the formula into 64 rows, type it once and drag it down the column.
 
-> 📌 **Strictly this is DLP, not ILP** — it's Flynn's SIMD from Lecture 1. It is in this deck
-> because it is another route to **more work per instruction**, which is the deck's actual subject.
+> 📌 Strictly this is **DLP** (data-level parallelism: the same operation on lots of data), not ILP. It's Flynn's **SIMD** from Lecture 1. It's in this deck because it's another way to get more work done per instruction.
+
+`addv v1, v2, v3` → **V1[i] = V2[i] + V3[i] for every i**. Vectors live in **vector registers** or in memory, described by a **base address**, a **length** and a **stride** (the gap in memory between consecutive elements). Length and stride can be held in special control registers.
+
+History: vector machines came **before** superscalar CPUs, in supercomputers. Today the idea is everywhere: SIMD instructions in every CPU (AVX, NEON) and in GPUs.
 
 ### Vector timing (slide 35)
 
-With 64-element vectors and an ADD unit of 10 stages:
+64 elements through a 10-stage adder: element 0 needs 10 cycles, then one result comes out per cycle.
 
-$$T_{ex} = 10 + 63 = 9 + 64$$
+```
+Cycle:       1    2    3   ...   10   11   12   ...   73
+Element 0    S1   S2   S3  ...   S10  ✓
+Element 1         S1   S2  ...   S9   S10  ✓
+Element 2              S1  ...   S8   S9   S10  ✓
+   ...
+Element 63                                      ...  S10 ✓
+```
 
-$$\boxed{T_{vector} = \text{VECTOR\_LENGTH} + \text{STARTUP TIME}}$$
+$$T = 10 + 63 = 9 + 64 = 73 \text{ cycles}$$
 
-> After vector startup time (the time to get the first result), **results are computed one per clock**.
+$$T_{vector} = \text{vector length} + \text{startup time}$$
 
-**[note]** This is exactly the pipeline fill-and-drain formula `k + (n−1)` from Lecture 2, with *n* = vector length. **One instruction** now drives 64 operations, so instruction fetch, decode and hazard checking are paid **once** instead of 64 times. That amortisation is the whole advantage.
+> ⚠️ **Off-by-one trap:** for this formula to give 73, **startup time = (time to the first result) − 1 = 9**, not 10. It's the pipeline formula k + (n − 1) from Lecture 2.
 
 ### Load/store vector architecture (slide 36)
 
-> - **Vector registers + scalar registers**
->   - Each vector register can hold consecutive components of vectors fetched from memory
->   - E.g. **8 vector registers of 64 components each**
->   - 1 read and 1 write port per vector register connected to functional units through **crossbars**
-> - **Vector functional units are deeply pipelined and specialized** — act on operands in vector registers
+- **Vector registers** (e.g. 8 registers × 64 numbers each) alongside the normal registers.
+- Vector math only works on vector registers: **load** data into them, **store** it out afterwards (like L.S/S.S, but for whole lists).
+- Each vector register has 1 read port and 1 write port, connected to the units through a **crossbar** (a switch that connects any register to any unit).
+- Vector units are **deeply pipelined**.
 
-Example: **Y = a · X + Y** (the classic SAXPY):
-
+**SAXPY: Y = a·X + Y**
 ```asm
-L.V    V1,0(R1),R6     /load vector X with base 0(R1) and stride (R6)
-Mul.V  V2,V1,F0        /multiply X by scalar in F0
-L.V    V3,0(R2),R6     /load vector Y
-Add.V  V4,V2,V3        /add the vectors
-S.V    0(R2),V4,R6     /store vector Y
+L.V    V1,0(R1),R6     ; load 64 numbers of X (base R1, stride R6)
+MUL.V  V2,V1,F0        ; × a (a single number in F0, used for every element)
+L.V    V3,0(R2),R6     ; load 64 numbers of Y
+ADD.V  V4,V2,V3        ; add
+S.V    0(R2),V4,R6     ; store back into Y
 ```
+5 instructions do 64 multiplies, 64 adds, and all the loads and stores.
 
-With **loop strip-mining** for vectors longer than 64:
-
+**Strip-mining** (lists longer than 64): process 64 elements at a time in a loop.
 ```asm
-Loop:  L.V   V1,0(R1),R6
-       Mul.V V2,V1,F0
-       L.V   V3,0(R2),R6
-       Add.V V4,V2,V3
-       S.V   0(R2),V4,R6
-       Subi  R1,R1,#512    /assume that machine is byte addressable
-       Subi  R2,R2,#512    /64 reg. x 8 bytes/reg = 512 bytes
-       Bnez  R1,loop
+Loop:  L.V    V1,0(R1),R6
+       MUL.V  V2,V1,F0
+       L.V    V3,0(R2),R6
+       ADD.V  V4,V2,V3
+       S.V    0(R2),V4,R6
+       SUBI   R1,R1,#512    ; 64 numbers × 8 bytes = 512 bytes (byte-addressable memory)
+       SUBI   R2,R2,#512
+       BNEZ   R1,Loop
 ```
+The loop bookkeeping now runs once per 64 numbers. (If the length isn't a multiple of 64, the vector-length register is set smaller for the last chunk.)
 
-**[note] Strip-mining** is chopping a long vector into fixed-size chunks the vector registers can hold — 64 elements at a time here. The 512 is 64 × 8 bytes.
+### Memory system (slides 37–38)
 
-### Memory system (slide 37)
-
-> **Access pattern to memory is known at decode time for the entire vectors**
-> - **Memory is interleaved, no need for caches**
-> - Vector load/store units from memory to registers
->
-> **Load store units can be seen as pipelines**
-> - The startup time is the time to get the first component
-> - **Banks are started one after the other**
-> - **If the number of banks is greater than the memory cycle time, we have no conflicts**, and results come out one per clock
-> - **Startup time is much longer than for functional units**
-> - Vectors accessed with a stride are stored in consecutive locations of vector register
-
-> 🔑 **"No need for caches"** is a startling claim worth understanding. Caches exist because access
-> patterns are *unpredictable* — you keep data nearby in case you need it again. A vector machine
-> **knows the entire access pattern at decode time**, so it can start the right memory banks in the
-> right order and stream data at one element per clock. Prediction is unnecessary when you have
-> certainty.
-
-### Memory organization (slide 38)
-
-> **Heavily interleaved (hundreds of memory modules)**
->
-> **INTERLEAVING: Xi is in bank (i MOD 4)**
+A single memory chip is slow (say, 4 cycles per access). **Interleaving:** spread the elements across several **banks** that work independently, with element xᵢ in bank (i mod 4), and start the banks one cycle apart:
 
 ```
-bank0: x0  x4      ─┐
-bank1: x1  x5      ─┤
-bank2: x2  x6      ─┼──▶ V1[0..63]
-bank3: x3  x7      ─┘
+bank0: x0  x4  x8  ...
+bank1: x1  x5  x9  ...
+bank2: x2  x6  x10 ...
+bank3: x3  x7  x11 ...
 ```
 
-With 4 banks each taking 4 cycles, bank0 is free again exactly when x4 is wanted. The banks are started staggered, so after the initial latency one element emerges per clock.
+| Cycle | Bank 0 | Bank 1 | Bank 2 | Bank 3 | Delivered (end of cycle) |
+|---|---|---|---|---|---|
+| 1 | start x0 | | | | |
+| 2 | busy | start x1 | | | |
+| 3 | busy | busy | start x2 | | |
+| 4 | busy | busy | busy | start x3 | **x0** |
+| 5 | **start x4** | busy | busy | busy | **x1** |
+| 6 | busy | **start x5** | busy | busy | **x2** |
 
-$$T_{load} = \text{vector\_length} + \text{startup time (time to get } x_0 - 1)$$
+Bank 0 is free again exactly when x4 is next → **one element per cycle** after the first.
+
+$$T_{load} = \text{vector length} + \text{startup}, \qquad \text{startup} = (\text{time to get } x_0) - 1$$
+
+Here: x0 arrives at cycle 4 → startup = 3 → T = 64 + 3 = 67.
+
+- **No conflicts when the number of banks ≥ the bank's cycle time.** ⚠️ The slide says "greater than", but its own example (4 banks, 4 cycles) works, so the rule is **at least**.
+- ⚠️ **Stride trap (not on the slide):** with 4 banks and a stride of 4 elements, x0, x4, x8, … are all in bank 0 → one element every 4 cycles (a **bank conflict**).
+- **Startup is longer** for memory than for arithmetic units.
+- Strided elements are packed **side by side** in the vector register.
+- **"No need for caches":** caches exist because the hardware doesn't know what will be needed next. A vector load says exactly which addresses it needs, up front, so the banks can stream them in order. There's nothing to guess.
 
 ### Chaining and parallel execution (slide 39)
 
-> **Independent vector instructions can be executed in parallel and also can be chained.**
+**One operation at a time:** each instruction waits for the previous one to finish all N elements.
+```
+load X  |startup|████ N ████|
+mul                         |startup|████ N ████|
+load Y                                          |startup|████ N ████|
+add                                                                 |startup|████ N ████|
+store                                                                                   |startup|████ N ████|
+```
+$$T = \text{all 5 startups} + 5N$$
 
-For `Y = a·X + Y`:
+**Parallel + chaining:** the two loads run at the same time, and each element is passed straight to the next unit as soon as it comes out (forwarding, at vector scale):
+```
+load X  |startup|████ N ████|
+load Y  |startup|████ N ████|
+mul       |startup|████ N ████|
+add         |startup|████ N ████|
+store         |startup|████ N ████|
+```
+$$T = \text{startup(load)} + \text{startup(mul)} + \text{startup(add)} + \text{startup(store)} + N$$
 
-**One operation at a time:**
-
-$$T = \text{startup(load)} + N + \text{startup(mulv)} + N + \text{startup(load)} + N + \text{startup(addv)} + N + \text{startup(store)} + N$$
-
-$$= \text{startup} + \text{vector\_length} \times 5$$
-
-**With chaining + parallelism:**
-
-$$T = \text{startup(load)} + \text{startup(mulv)} + \text{startup(addv)} + \text{startup(store)} + \text{vector\_length}$$
-
-*(the two loads execute in parallel)*
-
-> 🔑 **Chaining is forwarding, at vector scale.** Instead of waiting for the multiply to finish all
-> 64 elements before the add starts, element *i*'s product is fed **straight into the adder** as
-> soon as it emerges. The functional units form a pipeline of their own.
->
-> The saving is dramatic: **5 × N collapses to N**, with only the startup costs remaining. For
-> N = 64 that is roughly 320 cycles down to about 64 plus startups.
+Example (startups: load 10, mul 7, add 6, store 10; N = 64): 43 + 320 = **363** cycles → 33 + 64 = **97** cycles. **5N collapses to N.**
 
 ---
 
@@ -1013,59 +1252,77 @@ $$T = \text{startup(load)} + \text{startup(mulv)} + \text{startup(addv)} + \text
 
 | Approach | Who finds the parallelism | Key mechanism | Main weakness |
 |---|---|---|---|
-| **Static (in-order)** | **compiler** | code scheduling, loop unrolling, software pipelining | no dynamic info — can't see cache misses or memory addresses |
-| **Dynamic (OoO)** | **hardware** | reservation stations, CDB, reorder buffer | substantial hardware complexity; issue logic is O(n²) |
-| **VLIW** | **compiler**, aggressively | wide instruction word, **no hazard detection** | empty slots, code size, lockstep, register pressure |
-| **Vector** | **neither** — the data is uniform | one instruction per whole vector | needs regular, uniform data |
+| **Static (in-order)** | compiler | code scheduling, loop unrolling, software pipelining | no run-time info: can't see cache misses or memory addresses |
+| **Dynamic (OoO)** | hardware | reservation stations, CDB, reorder buffer | lots of hardware; issue logic grows with n² |
+| **VLIW** | compiler, aggressively | wide instruction, **no hazard detection** | empty slots, code size, lockstep, register pressure |
+| **Vector** | nobody: the data is uniform | one instruction per whole vector | needs regular, uniform data |
 
 ### Formulas
 
-$$\text{latency} = \text{execution time} - 1 \quad\text{(linear pipelines)}$$
+$$\text{latency} = \text{execution time} - 1$$
 
-$$T_{vector} = \text{vector length} + \text{startup time}$$
+$$\text{stalls} = \text{latency} - \text{independent instructions in between} \quad (\ge 0)$$
 
-$$\text{IPC} = \frac{1}{\text{CPI}}$$
+$$\text{time} = \text{instructions} \times \text{CPI} \times \text{cycle time}, \qquad \text{IPC} = 1 / \text{CPI}$$
 
-Chaining: $\;\text{startup}_{total} + N\;$ instead of $\;\text{startup} + 5N$
+$$\text{pairs to check when issuing } n = n(n-1)/2$$
 
-### The baseline latency table
+$$T_{vector} = \text{vector length} + \text{startup} \quad (\text{startup} = \text{time to first result} - 1)$$
 
-| Functional unit | Latency | Initiation interval |
+Chaining: startups + N, instead of startups + 5N.
+
+### Latencies
+
+| | Basic | Super-pipelined |
 |---|---|---|
 | Integer ALU | 0 | 1 |
-| Load | 1 | 1 |
-| FP OP | 4 | 1 (5 if not pipelined) |
+| Load | 1 | 3 |
+| FP OP | 4 | 4 |
+| Taken branch (clocks, including itself) | 3 | 4 |
+| Initiation interval | 1 for all pipelined units (FP: 5 if not pipelined) | same |
 
-*(Super-pipelined: integer ALU 1, load 3, FP 4.)*
-
-### Hazards, before and after the FP lane
+### Hazards
 
 | | Simple 5-stage | With FP lane | With dynamic scheduling |
 |---|---|---|---|
 | **RAW** | yes | yes, worse | yes, on registers **and memory** |
 | **WAR** | impossible | **impossible** (reads in ID) | ⚠️ **possible again** |
 | **WAW** | impossible | ⚠️ **possible** | ⚠️ possible |
-| **Structural** | memory | + **FP register write port** | CDB, functional units, RS availability |
+| **Structural** | memory | + **FP register write port** | CDB, functional units, free RSs |
 
 ### Running example — all the speedups
 
-| Version | Clocks per original iteration | Speedup |
+| Version | Clocks per number | Speedup |
 |---|---|---|
-| Unoptimized | 15 (CPI 1.88) | 1.00 |
-| Local scheduling | 12 | **1.25** |
-| Loop unrolling (×2) + rename + schedule | 7 | **2.14** |
-| Software pipelining | 10 | **1.50** *(no code expansion, no renaming)* |
+| Unoptimised | 15 (CPI 1.88) | 1.00 |
+| Local scheduling | 12 | 1.25 |
+| Software pipelining | 10 | 1.50 |
+| Loop unrolling ×2 + rename + schedule | 7 | 2.14 |
 
 ### Things worth memorising
 
 - **In-order execution ≠ in-order completion.** The FP lane breaks them apart.
-- **Latency** = how long a *dependent* instruction waits. **Initiation interval** = how often you can *start* a new op. Latency 4 + interval 1 ⟹ four independent FP ops back to back.
+- **Latency** = how long a *dependent* instruction waits. **Initiation interval** = how often you can *start* a new operation.
+- **Fill the wait with independent work**: that's what every static technique does.
 - **WAR is impossible in the static FP pipeline** (reads happen in ID) but **comes back** with dynamic scheduling.
-- **Anti-dependence = WAR. Output dependence = WAW.** Both removable by renaming; **RAW never is**.
-- **Loop unrolling** grows code and registers; **software pipelining** doesn't. Use both.
-- **Execute ≠ commit.** Speculation lives in the gap.
-- **Issue logic is the bottleneck** in dynamically scheduled superscalars — O(n²) dependence checks.
-- **Chaining** turns 5N into N.
+- **Anti-dependence = WAR, output dependence = WAW.** Both are removed by renaming; **RAW never is.**
+- **Loop unrolling** cuts bookkeeping but grows code and registers; **software pipelining** removes waits for free. Use both.
+- **Tomasulo:** wait on tags, not register names → automatic renaming.
+- **Complete ≠ commit.** Speculation lives in the gap; the ROB commits in order.
+- **Issue logic is the bottleneck** of wide out-of-order cores (n² checks).
+- **VLIW** = static scheduling with no safety net. **Vector** = one instruction, many data. **Chaining** turns 5N into N.
+
+### ⚠️ Corrections to remember
+
+| Topic | What to remember |
+|---|---|
+| RAW example, slide 7 | I3 loses 5 cycles = 1 in IF + 4 in ID |
+| Running example | `A` and `a` are the same array (Pascal ignores case) |
+| Recurrence distance 5 | 5 copies are independent; the 6th collides. "Unroll 4 times" = 4 extra copies |
+| VLIW instruction size | 5 slots × 16–24 bits = 80–120 bits (112–168 would be 7 slots) |
+| VLIW empty slots | 22 of 45 ≈ 49%, not 40% |
+| Vector startup | startup = time to first result − 1 |
+| Memory banks | need banks **≥** cycle time (not strictly greater); watch out for stride conflicts |
 
 ---
 
@@ -1074,16 +1331,16 @@ Chaining: $\;\text{startup}_{total} + N\;$ instead of $\;\text{startup} + 5N$
 <details>
 <summary><b>1.</b> Why does the pipeline need a separate floating-point lane, and what does it break?</summary>
 
-FP arithmetic is far slower than integer. Forcing it into one EX stage would stretch the clock period for **every** instruction. The separate 5-stage FP lane keeps the clock short.
+FP arithmetic is much slower than integer. Forcing it into one EX stage would stretch the clock period for **every** instruction. The separate 5-stage FP lane keeps the clock short.
 
-What it breaks: **out-of-order completion.** Two lanes of different lengths means an instruction issued later can finish earlier — which makes **WAW hazards possible** and creates a **structural hazard on the FP register write port**.
+What it breaks: instructions can now **finish out of order** (a later, short instruction overtakes an earlier, long one). That makes **WAW possible** and creates a **structural hazard on the FP register write port**.
 </details>
 
 <details>
 <summary><b>2.</b> Distinguish latency from initiation interval. Give the values for the baseline machine.</summary>
 
-**Latency** = minimum cycles between an instruction producing a result and a dependent instruction consuming it (= execution time − 1 for linear pipelines).
-**Initiation interval** = cycles that must elapse between consecutive issues **to the same unit**.
+**Latency** = cycles a dependent instruction must wait for a result (= execution time − 1).
+**Initiation interval** = cycles between starting two operations on the same unit.
 
 | Unit | Latency | Initiation interval |
 |---|---|---|
@@ -1093,126 +1350,148 @@ What it breaks: **out-of-order completion.** Two lanes of different lengths mean
 </details>
 
 <details>
-<summary><b>3.</b> Why are WAR hazards impossible in the static FP pipeline but possible with dynamic scheduling?</summary>
+<summary><b>3.</b> An unpipelined unit takes 3 cycles. What are its latency and initiation interval?</summary>
 
-In the static pipeline, **registers are read in ID**, very early. By the time any instruction reaches WB, every earlier instruction has already read its operands — so a later write can never overtake an earlier read.
-
-With dynamic scheduling, instructions **sit in queues and read operands late**, so a later instruction's write can overtake an earlier instruction's read. Slide 22: *"All data hazards — RAW, WAW, and WAR — are now possible both on memory and registers."*
+Latency = 3 − 1 = **2**. Initiation interval = **3**: the unit is busy for all 3 cycles, so the next operation must wait until it's empty.
 </details>
 
 <details>
-<summary><b>4.</b> In the local-scheduling example, why did the store's displacement change from #4(R1) to #-4(R1)?</summary>
+<summary><b>4.</b> <code>ADD.D F2,F4,F6</code> is followed by <code>L.D F2,0(R2)</code>. What goes wrong without protection, and what does the pipeline do?</summary>
 
-The store was moved **after** `ADDI R1,R1,#8`, so R1 has already advanced by 8. The displacement must shift by −8 (from +4 to −4) to still address the same memory location.
-
-The deck calls this *"WAR hazard on R1"* — reordering changed the instruction's meaning and the compiler had to repair it.
+**WAW.** The load takes the short lane and writes F2 in cycle 6; the add takes the long lane and writes F2 in cycle 9, so the add's stale value would win. The pipeline **stalls the L.D in ID** until its write will land after the add's.
 </details>
 
 <details>
-<summary><b>5.</b> Name the three steps of loop unrolling and what each accomplishes.</summary>
+<summary><b>5.</b> Why is WAR impossible in the static FP pipeline but possible with dynamic scheduling?</summary>
 
-1. **Unroll twice** — copy the loop body, remove redundant loop-control instructions, adjust displacements. *Amortises loop overhead.*
-2. **Rename FP registers** — give the second copy its own registers. *Removes the WAW and WAR hazards that would otherwise prevent interleaving.*
-3. **Schedule** — move loads up, stores down, adjust displacements. *Fills the stalls with independent work from the other iteration.*
+In the static pipeline, registers are **read in ID**, very early, and written in WB, at the end. A later instruction can never write before an earlier one has read.
 
-Result: 14 clocks for 2 iterations = 7 per iteration, speedup **15/7 = 2.14**.
+With dynamic scheduling, instructions **sit in queues and may read late**, while later instructions run early. So a later write can overtake an earlier read.
 </details>
 
 <details>
-<summary><b>6.</b> `for (i=5;i<100;i++) A[i] = a[i-5] + b[i];` — how many times can this be unrolled, and why?</summary>
+<summary><b>6.</b> Super-pipelined machine: a load is followed immediately by an instruction that uses its value. How many stalls? What if 2 independent instructions are placed in between?</summary>
 
-**Up to 4 times.** The recurrence distance is **5 iterations**, so iterations *i* … *i+4* are mutually independent, but the 5th copy would collide with the 1st.
-
-Unrolling 5 times ⟹ *"loop-carried dependency limits code motion."*
+Load latency is 3, so **3 stalls** immediately after. With 2 independent instructions in between: 3 − 2 = **1 stall**.
 </details>
 
 <details>
-<summary><b>7.</b> Compare loop unrolling with software pipelining.</summary>
+<summary><b>7.</b> On the 2-way (int + FP) machine, how many cycles to issue <code>DADD</code>, <code>DSUB</code>, <code>ADD.D</code>, <code>MUL.D</code> (all independent, in that order)?</summary>
+
+**3 cycles.** DADD and DSUB are both integer, so DADD goes alone. Then DSUB (int) pairs with ADD.D (FP). Then MUL.D goes alone. IPC = 4/3 ≈ 1.33.
+</details>
+
+<details>
+<summary><b>8.</b> In local scheduling, why did the store change from <code>#4(R1)</code> to <code>#-4(R1)</code>?</summary>
+
+The store was moved **after** `ADDI R1,R1,#8`, so R1 has already moved forward by 8. To hit the same address: 4 − 8 = −4. Check with R1 = 1000: the original address is 1004; after the ADDI, R1 = 1008, and 1008 − 4 = 1004.
+
+The slide calls this a "WAR hazard on R1": the store reads R1, the ADDI writes it, and moving the store flips that order.
+</details>
+
+<details>
+<summary><b>9.</b> Name the three steps of loop unrolling and what each one does.</summary>
+
+1. **Unroll:** copy the body, keep one copy of the bookkeeping, adjust displacements. *Halves the bookkeeping cost.*
+2. **Rename:** give the second copy its own registers. *Removes the WAR/WAW (name) dependences that would stop the copies being mixed.*
+3. **Schedule:** loads up, stores down, fix displacements. *Fills the stalls with work from the other copy.*
+
+Result: 14 clocks per 2 numbers = 7 per number, speedup 15/7 = 2.14.
+</details>
+
+<details>
+<summary><b>10.</b> <code>for (i=5;i<100;i++) A[i] := a[i-5] + b[i];</code> How far can it be unrolled, and why?</summary>
+
+Iteration i depends on iteration i−5 (**distance 5**). So any 5 consecutive iterations (i … i+4) are independent; a 6th copy (i+5) would need the 1st copy's result. In the slide's wording, **"unroll up to 4 times"** (4 extra copies + the original = 5).
+</details>
+
+<details>
+<summary><b>11.</b> In the software-pipelined loop, which number does the store save in each trip, and why doesn't it stall?</summary>
+
+It saves the **previous** number's sum. That add was started a whole trip earlier, and the two ADDIs, the branch and the branch's 2 wasted cycles all pass before the store needs the value, which covers the FP latency.
+</details>
+
+<details>
+<summary><b>12.</b> Compare loop unrolling with software pipelining.</summary>
 
 | | Loop unrolling | Software pipelining |
 |---|---|---|
-| Mechanism | copies the body | re-stages the body across iterations |
-| Code size | grows | unchanged |
-| Register pressure | grows (renaming) | unchanged |
-| Extra code | — | prologue + epilogue |
+| Fixes | bookkeeping cost | waiting |
+| Code size | grows | same (+ prologue/epilogue) |
+| Extra registers | yes | no |
+| Running example | 7 clocks/number | 10 clocks/number |
 
-The deck's verdict on software pipelining: **"No stall, no code expansion, no register renaming"** — and **"Use both: first loop unrolling then software pipelining."**
+Use both: unroll first, then software-pipeline.
 </details>
 
 <details>
-<summary><b>8.</b> Why does "lack of dynamic information — memory addresses" limit static scheduling?</summary>
+<summary><b>13.</b> Why does "lack of dynamic information — memory addresses" limit static scheduling?</summary>
 
-The compiler usually **cannot prove** that two memory references touch different locations, so it must conservatively preserve their order — even when they are in fact independent.
-
-The hardware, at run time, **knows both addresses exactly** and can reorder freely. That information asymmetry is the main case for dynamic scheduling.
+The compiler usually **can't prove** that two memory accesses use different addresses (e.g. `0(R1)` vs `0(R5)`), so it must keep their order just in case. The hardware knows the actual addresses at run time and can reorder safely.
 </details>
 
 <details>
-<summary><b>9.</b> What is the CDB in Tomasulo's algorithm, and why does it matter?</summary>
+<summary><b>14.</b> What is the CDB in Tomasulo's algorithm, and why does it matter?</summary>
 
-The **common data bus**. A functional unit's result is **broadcast once on the CDB with a tag**, and *all instructions in queues and all registers in both register files "watch" the CDB and grab the value they are waiting for.*
-
-Why it matters: instructions wait on **tags**, not register names — so it is **implicit register renaming**, and it replaces the register file as the communication mechanism.
+The **common data bus**. Each result is **broadcast once with a tag**, and every reservation station and register waiting for that tag grabs it at the same time. Because instructions wait on **tags**, not register names, it acts as **automatic register renaming**.
 </details>
 
 <details>
-<summary><b>10.</b> What are the three ideas combined in hardware-based speculation, and the three things added to Tomasulo?</summary>
+<summary><b>15.</b> In the Tomasulo walkthrough, why does register F2 ignore (Add1, 15)?</summary>
 
-**Three ideas:** dynamic OoO scheduling (Tomasulo) · dynamic branch prediction · speculative execution.
-
-**Added to Tomasulo:** branch prediction · temporary storage for speculative results · a mechanism to roll back when speculation fails.
-
-Key principle: **separate completion from commit.** Between the two, results are speculative; commit happens **in program order**.
+The register status for F2 points to **Add2**, the newest instruction that writes F2 in program order. F2 only accepts a value with that tag. That's how WAW is solved: the older write can't overwrite the newer one.
 </details>
 
 <details>
-<summary><b>11.</b> What is the bottleneck in dynamically scheduled superscalars, and why does it scale badly?</summary>
+<summary><b>16.</b> Speculation: which three ideas are combined, and what three things are added to Tomasulo?</summary>
 
-**Issue logic.** To issue *n* instructions in one cycle you must check every pair among them for dependences — **O(n²)** comparisons inside one clock period.
+**Ideas:** dynamic out-of-order scheduling (Tomasulo) · dynamic branch prediction · speculative execution.
 
-That is the hard wall on issue width, and a direct reason the industry stopped widening cores and started adding them.
+**Added:** branch prediction · temporary storage for speculative results (the ROB) · a way to roll back after a wrong guess.
+
+Key principle: separate **completion** from **commit**; commit in program order.
 </details>
 
 <details>
-<summary><b>12.</b> List the five problems with VLIW shown on slide 33.</summary>
+<summary><b>17.</b> The branch was mispredicted. What happens to the instructions that ran after it?</summary>
 
-**Code size · Empty slots · Register pressure · Lockstep · Cost of branches.**
-
-Empty slots are still encoded in the instruction word (hence code size); lockstep means one stalled operation stalls the whole bundle, since there is no hazard-detection hardware to let the others continue.
+They completed, but their results are only in the ROB. Everything behind the branch is **flushed**, and fetching restarts on the correct path. The official registers and memory were never touched, so the program sees no wrong values.
 </details>
 
 <details>
-<summary><b>13.</b> A vector ADD unit has 8 stages and vectors are 64 elements. Execution time?</summary>
+<summary><b>18.</b> What is the bottleneck in dynamically scheduled superscalars, and why does it scale badly?</summary>
 
-$$T_{ex} = \text{startup} + \text{vector length} - 1 = 8 + 63 = \mathbf{71 \text{ cycles}}$$
-
-Or in the deck's form: $T_{vector}$ = vector_length + startup time = 64 + 7 = 71.
-
-After the startup time, **results emerge one per clock**.
+**Issue logic.** Issuing n instructions in one cycle means checking every pair among them for dependences: n(n−1)/2 checks (1, 6, 28 for n = 2, 4, 8), all within one clock period.
 </details>
 
 <details>
-<summary><b>14.</b> Why do vector processors claim "no need for caches"?</summary>
+<summary><b>19.</b> List the five VLIW problems from slide 33.</summary>
 
-Because the **access pattern to memory is known at decode time for the entire vector** — base address, length, stride. Caches exist to cope with *unpredictable* access; a vector machine has certainty instead, so it uses **heavily interleaved memory banks** started one after the other and streams one element per clock.
+**Code size · empty slots · register pressure · lockstep · cost of branches.**
+
+In the example, 22 of 45 slots are empty; 15 FP registers are live at once; one cache miss stalls the whole instruction.
 </details>
 
 <details>
-<summary><b>15.</b> What is chaining, and what does it save?</summary>
+<summary><b>20.</b> A vector ADD unit has 8 stages and vectors are 64 elements. Execution time?</summary>
 
-Feeding element *i*'s result from one vector functional unit **straight into the next** as it emerges, instead of waiting for the whole vector to finish. It is forwarding at vector scale.
-
-For `Y = a·X + Y`: without chaining, `startup + 5 × vector_length`. With chaining and parallel execution (the two loads run together), `startup(load) + startup(mulv) + startup(addv) + startup(store) + vector_length`.
-
-**5N collapses to N.**
+First result after 8 cycles, then one per cycle: 8 + 63 = **71 cycles**. In the formula form: 64 + startup, where startup = 8 − 1 = 7 → 71.
 </details>
 
----
+<details>
+<summary><b>21.</b> 4 banks, each taking 4 cycles. Why is a stride of 4 elements a problem?</summary>
 
-## References (slide 40)
+Element xᵢ is in bank (i mod 4), so x0, x4, x8, … are **all in bank 0**. Each access must wait for the previous one to finish: one element every 4 cycles instead of one per cycle (a bank conflict).
+</details>
 
-- Michel Dubois, Murali Annavaram, and Per Stenström. 2012. *Parallel Computer Organization and Design.* Cambridge University Press, USA.
-- David A. Patterson and John L. Hennessy. *Computer Architecture: A Quantitative Approach.* Morgan Kaufmann, 6th edition.
+<details>
+<summary><b>22.</b> What is chaining, and what does it save?</summary>
+
+Passing each element's result from one vector unit **straight into the next** as soon as it comes out, instead of waiting for the whole vector. It's forwarding at vector scale.
+
+For Y = a·X + Y: without it, all startups + 5N. With chaining and the two loads in parallel: startup(load) + startup(mul) + startup(add) + startup(store) + N.
+</details>
+
 
 ---
 
