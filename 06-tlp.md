@@ -1,16 +1,32 @@
 # COE 502 — Lecture 6: Multiprocessor Systems (Thread-Level Parallelism)
 
-**Parallel Processing Architectures** · KFUPM · Dr. Abdulaziz Tabbakh
+**Parallel Processing Architectures** · KFUPM · Dr. Abdulaziz Tabbakh · slides: `06-TLP.pdf`
 
-> These notes follow deck `06-TLP.pdf`. Anything marked **[note]** is extra context not on the slides.
->
-> **This deck is short but load-bearing.** It describes the *hardware* that the rest of the course
-> is about — and its final slide names the two problems (cache coherence and memory consistency)
-> that topic 7 and **course outcome 2** are devoted to.
+> **How to read these notes**
+> - Sections follow the slides in order. Each one opens with **The idea**. For a 5-minute refresh, read only those.
+> - 💡 = analogy or extra help (not on the slides). ⚠️ = exam trap, or a spot where the slide's wording is confusing.
+
+---
+
+## The whole lecture in 30 seconds
+
+Lecture 5 squeezed more speed out of **one** instruction stream. This lecture puts **several processors** in one machine, each running its own thread, all sharing one memory.
+
+The programmer is told memory is **one flat space**. The hardware underneath is not flat: some memory is close, some is far, and every processor keeps its own **cached copies**. That gap causes everything in this deck:
+
+| The hardware does this… | …so this matters | Section |
+|---|---|---|
+| Memory sits in different places | Some accesses are slower (**NUMA**), so where data lives matters | 2, 3, 9 |
+| Processors are joined by a network | Bus vs point-to-point decides latency, bandwidth and scale | 6–8 |
+| Each processor keeps private cached copies | Copies can disagree → **cache coherence** | 4, 11 |
+| Writes can become visible in a different order | → **memory consistency** | 11 |
+| Several threads update shared data | → hardware **synchronization** (atomic operations) | 11 |
 
 ---
 
 ## Contents
+
+- [Key words](#key-words)
 
 1. [What thread-level parallelism is](#1-what-thread-level-parallelism-is)
 2. [Two types: SMP and DSM](#2-two-types-smp-and-dsm)
@@ -28,396 +44,435 @@
 
 ---
 
+## Key words
+
+| Word | Meaning |
+|---|---|
+| **Thread** | One independent stream of instructions, with its own program counter |
+| **Program counter (PC)** | The register holding the address of the next instruction to run |
+| **Core / processor** | Hardware that runs one thread at a time |
+| **Socket** | One physical processor chip on the motherboard (it can contain many cores) |
+| **Node** | One unit of a bigger machine: processor(s) + memory, sometimes + I/O |
+| **Interconnect / network** | The wiring that lets processors and memories talk to each other |
+| **Cache line** | The unit a cache stores and moves, typically 64 bytes |
+| **Latency** | How long one access takes |
+| **Bandwidth** | How much data can move per second in total |
+| **Hop** | One link a message crosses on its way to its destination |
+
+---
+
 ## 1. What thread-level parallelism is
 
-> **Thread-Level parallelism**
-> - **Have multiple program counters**
-> - **Uses MIMD model**
-> - **Targeted for tightly-coupled shared-memory multiprocessors**
+**The idea:** run **several independent instruction streams at once**, one per processor. Each stream has its own program counter. To keep *n* processors busy you need *n* threads.
+
+> **Thread-level parallelism**
+> - Have **multiple program counters**
+> - Uses **MIMD** model
+> - Targeted for **tightly-coupled shared-memory multiprocessors**
 >
-> **For *n* processors, need *n* threads**
+> For *n* processors, need *n* threads
 >
-> **Amount of computation assigned to each thread = grain size**
-> - Threads can be used for data-level parallelism, but **the overheads may outweigh the benefit**
+> Amount of computation assigned to each thread = **grain size**
+> - Threads can be used for data-level parallelism, but the overheads may outweigh the benefit
 
-### Unpacking the three bullets
+**The three bullets in plain words:**
+- **Multiple program counters:** one PC = one instruction stream. ILP (Lecture 5) and vector/DLP work inside **one** stream. TLP means **several** streams, each at its own place in its own code.
+- **MIMD** (Flynn, Lecture 1): **M**ultiple **I**nstruction, **M**ultiple **D**ata. Each processor can run different instructions on different data.
+- **Tightly coupled shared memory:** the processors sit close together and share one memory. A loosely coupled cluster, which talks by sending messages, is the opposite.
 
-**"Multiple program counters"** is the crispest definition of TLP you will get. A **program counter** is the register holding the address of the next instruction to execute. One PC = one instruction stream. ILP and DLP both operate within a *single* stream, so they have **one** PC. TLP means **several** — genuinely independent streams, each with its own place in its own program.
+> 💡 **ILP vs TLP in a kitchen.** ILP is one cook doing a few independent steps of the same recipe at once. TLP is several cooks, each following their own recipe card (their own PC), all using the same pantry (shared memory).
 
-**"Uses MIMD model"** — Flynn's Multiple Instruction, Multiple Data (Lecture 1 §19). Every processor may be executing a different instruction on different data.
-
-**"Tightly-coupled shared-memory multiprocessors"** — *tightly coupled* means the processors are close together and share memory, as opposed to a loosely-coupled cluster that communicates by messages. This deck is about the shared-memory branch of Lecture 4's axis 2.
-
-### For *n* processors you need *n* threads
-
-Obvious once stated, and it's the practical constraint: **hardware parallelism is useless without software parallelism to feed it.** A 64-core machine running a single-threaded program uses one core. The other 63 idle.
-
-This is the whole reason Lecture 1 ended by saying performance became the programmer's problem in 2004.
+**"For n processors, need n threads":** hardware parallelism is useless without software parallelism. A 64-core machine running a single-threaded program uses 1 core, and the other 63 sit idle. That's why performance became the programmer's job once clock speeds stopped rising (Lecture 1).
 
 ### Grain size
 
-> **Amount of computation assigned to each thread = grain size.**
+**Grain size = how much work each thread gets.** It's the same idea as *granularity* in Lecture 4.
 
-Same concept as **parallelism granularity** from Lecture 4 §9, under a different name.
+| Grain | Work per thread | Good | Bad |
+|---|---|---|---|
+| **Coarse** | a lot | overhead barely matters | fewer threads to spread across processors |
+| **Fine** | a little | lots of parallelism available | overhead can dominate |
 
-| Grain | Means | Consequence |
-|---|---|---|
-| **Coarse** | lots of work per thread | coordination overhead negligible; fewer threads available |
-| **Fine** | little work per thread | more parallelism available; overhead can dominate |
-
-> ⚠️ **"Threads can be used for data-level parallelism, but the overheads may outweigh the benefit."**
+> ⚠️ **"Overheads may outweigh the benefit."** Creating, scheduling and synchronizing threads costs time. Split an array of 1,000 numbers across 100 threads and each one adds only 10 numbers, which is far less work than it takes to start and coordinate the thread.
 >
-> You *can* exploit DLP with threads (that is exactly what the SPMD matrix multiply in Lecture 4
-> did). But thread creation, scheduling and synchronisation are expensive. If each thread only
-> processes a handful of array elements, you spend more time managing threads than computing.
->
-> That is the Mortar curve from Lecture 3, and the $P_{opt} = \sqrt{T_{MM}/T_{init}}$ formula from
-> Lecture 4, restated in one sentence.
+> 💡 Asking 10 friends to help fold 10 shirts: explaining the job takes longer than folding them yourself. Same lesson as the overhead curve in Lecture 3 and the optimal-*P* formula in Lecture 4.
 
 ---
 
 ## 2. Two types: SMP and DSM
 
+**The idea:** both give the programmer **one shared memory**. The difference is **where the memory physically is**. In SMP it's one shared pool, equally far from everyone. In DSM it's split up, with a piece in each node, so some memory is near and some is far.
+
 > **Symmetric multiprocessors (SMP)**
-> - **Small number of cores**
-> - **Share single memory with uniform memory latency**
+> - Small number of cores
+> - Share single memory with uniform memory latency
 >
 > **Distributed shared memory (DSM)**
-> - **Memory distributed among processors**
-> - **Non-uniform memory access/latency (NUMA)**
-> - **Processors connected via direct (switched) and non-direct (multi-hop) interconnection networks**
+> - Memory distributed among processors
+> - Non-uniform memory access/latency (NUMA)
+> - Processors connected via direct (switched) and non-direct (multi-hop) interconnection networks
 
+**SMP: one shared memory**
 ```
-   SMP — one shared memory                 DSM — memory per node
-┌────┐ ┌────┐ ┌────┐ ┌────┐          ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
-│ P  │ │ P  │ │ P  │ │ P  │          │Multi-│ │Multi-│ │Multi-│ │Multi-│
-├────┤ ├────┤ ├────┤ ├────┤          │core  │ │core  │ │core  │ │core  │
-│cache│ │cache│ │cache│ │cache│        │ MP   │ │ MP   │ │ MP   │ │ MP   │
-└──┬─┘ └──┬─┘ └──┬─┘ └──┬─┘          └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘
-   └──────┴───┬──┴──────┘             Mem│I/O  Mem│I/O  Mem│I/O  Mem│I/O
-        ┌─────┴──────┐                   └────────┴────────┴────────┘
-        │Shared cache│                   ┌────────────────────────┐
-        └─────┬──────┘                   │ Interconnection network│
-    ┌─────────┴────┐                     └────────────────────────┘
-    │ Main memory  │  I/O                  (more nodes below)
-    └──────────────┘
+ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
+ │  P  │ │  P  │ │  P  │ │  P  │
+ │cache│ │cache│ │cache│ │cache│
+ └──┬──┘ └──┬──┘ └──┬──┘ └──┬──┘
+    └───────┴───┬───┴───────┘
+         ┌──────┴──────┐
+         │ shared cache│
+         └──────┬──────┘
+         ┌──────┴──────┐
+         │ main memory │
+         └─────────────┘
 ```
 
-Both are **shared memory** from the programmer's point of view — one global address space. The difference is **where the memory physically sits**, and therefore how long it takes to reach.
+**DSM: a piece of memory in every node** (each node can itself be a multicore chip)
+```
+ ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐
+ │   P   │   │   P   │   │   P   │   │   P   │
+ │ cache │   │ cache │   │ cache │   │ cache │
+ ├───┬───┤   ├───┬───┤   ├───┬───┤   ├───┬───┤
+ │Mem│I/O│   │Mem│I/O│   │Mem│I/O│   │Mem│I/O│
+ └───┴┬──┘   └───┴┬──┘   └───┴┬──┘   └───┴┬──┘
+      └───────────┴─────┬─────┴───────────┘
+           ┌────────────┴────────────┐
+           │ interconnection network │
+           └─────────────────────────┘
+```
 
 | | **SMP** | **DSM** |
 |---|---|---|
-| Memory | one shared pool | distributed among processors |
-| Latency | **uniform** (UMA) | **non-uniform** (NUMA) |
-| Scale | **small** number of cores | large |
-| Interconnect | typically a bus | switched / multi-hop networks |
+| Memory | one shared pool | split across the nodes |
+| Access time | **the same for everyone** (UMA) | **local fast, remote slow** (NUMA) |
+| Scale | small (a few to tens of cores) | large |
+| Interconnect | usually a bus | switched / multi-hop networks |
 
-**[note] Why SMP can't scale.** All processors contend for one memory and one interconnect. Add processors and you add traffic through a fixed-bandwidth resource, so each processor gets a smaller share. Past a modest count (tens), the interconnect saturates and extra cores buy nothing. DSM fixes this by giving each node its own memory — at the price of making *where your data lives* matter to performance.
+> 💡 **SMP** = one library in the town centre: everyone walks the same distance, but it gets crowded. **DSM** = every house has its own bookshelf, and you can borrow from a neighbour's. Your own shelf is instant; a neighbour's takes a walk.
+
+**Why SMP doesn't scale:** every processor goes through the **same** interconnect to the **same** memory. Add processors and each one gets a smaller share of that fixed bandwidth. Past a few tens of cores, adding more buys nothing. DSM fixes this by giving each node its own memory. The price: **where your data lives now affects speed.**
+
+> ⚠️ **Two meanings of "direct".** Here (H&P wording), "direct (switched)" vs "non-direct (multi-hop)" describes how far apart nodes are. In §8 (slide 12), **direct** means *the router is built into the node* and **indirect** means *separate router chips*. Answer using the meaning of the slide the question is about.
 
 ---
 
 ## 3. Shared-memory physical architecture
 
-> **Almost always there is a hierarchical structure**
-> - **Within socket, within a machine, across machines**
-> - **Contrary to the flat view of shared-memory programming models**
->
-> **At each level of hierarchy, there are**
-> - multiple **processing elements** (cores, sockets, boxes, …)
-> - multiple **memory elements** (caches, DRAM modules, …)
-> - an **interconnection network** connecting them together
+**The idea:** the programming model says memory is **flat** (every access looks the same). Real hardware is a **hierarchy**: within a chip, within a machine, across machines. Each level has its own processors, memories and network, and each level further away is slower.
 
-> 📌 **"Contrary to the flat view of shared-memory programming models"** is the sentence to
-> remember. OpenMP presents one flat address space where every access looks alike. The hardware
-> underneath is a **hierarchy** with latencies differing by orders of magnitude depending on
-> whether the data is in your L1, another core's L2, another socket's DRAM, or another machine.
->
-> This is Lecture 4 slide 3's warning made concrete: *the programming model and the hardware can
-> differ, but for high performance they should match.* Here the mismatch is permanent and
-> deliberate — and it is why "it compiles and runs correctly" says nothing about whether it's fast.
+> - Almost always there is a **hierarchical structure**
+>   - Within socket, within a machine, across machines
+>   - **Contrary to the flat view of shared-memory programming models**
+> - At each level of hierarchy, there are
+>   - multiple **processing elements** (cores, sockets, boxes, …)
+>   - multiple **memory elements** (caches, DRAM modules, …)
+>   - an **interconnection network** connecting them together
 
-### Two configurations at each level
+> 💡 Your desk drawer, the cabinet in your office, the archive in the basement, a warehouse across town. To your manager it's all just "the company files", but how long it takes to fetch one depends a lot on where it is.
 
-> At each level, one of **two general configurations** w.r.t. processor/memory connection:
+**Why it matters:** OpenMP code that *runs correctly* can still be **slow** if its data sits far away. The flat model hides the distance; it doesn't remove it. (Lecture 4: the model and the hardware can differ, but for speed they should match.)
 
+### Two ways to connect processors and memory (at any level)
+
+**Decoupled:** memory is on the **far side** of the network. Every access crosses it, so everyone waits the same time.
 ```
-      DECOUPLED CONFIGURATION                  COUPLED CONFIGURATION
-  ┌───┐  ┌───┐  ┌───┐  ┌───┐              ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
-  │ P │  │ P │  │ P │  │ P │              │  P  │ │  P  │ │  P  │ │  P  │
-  └─┬─┘  └─┬─┘  └─┬─┘  └─┬─┘              ├───┬─┤ ├───┬─┤ ├───┬─┤ ├───┬─┤
-    │      │      │      │                │Mem│R│ │Mem│R│ │Mem│R│ │Mem│R│
-  ┌─┴──────┴──────┴──────┴─┐              └─┬───┘ └─┬───┘ └─┬───┘ └─┬───┘
-  │      Interconnect      │                │       │       │       │
-  └─┬──────┬──────┬──────┬─┘              ┌─┴───────┴───────┴───────┴─┐
-    │      │      │      │                │       Interconnect        │
-  ┌─┴─┐  ┌─┴─┐  ┌─┴─┐  ┌─┴─┐              └───────────────────────────┘
-  │Mem│  │Mem│  │Mem│  │Mem│
-  └───┘  └───┘  └───┘  └───┘
+ ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐
+ │   P   │  │   P   │  │   P   │  │   P   │
+ └───┬───┘  └───┬───┘  └───┬───┘  └───┬───┘
+ ┌───┴──────────┴──────────┴──────────┴───┐
+ │              interconnect              │
+ └───┬──────────┬──────────┬──────────┬───┘
+ ┌───┴───┐  ┌───┴───┐  ┌───┴───┐  ┌───┴───┐
+ │  Mem  │  │  Mem  │  │  Mem  │  │  Mem  │
+ └───────┘  └───────┘  └───────┘  └───────┘
+```
+
+**Coupled:** each processor has **its own memory** next to it, plus a router (**R**). Local access skips the network; remote access crosses it.
+```
+ ┌───────┐  ┌───────┐  ┌───────┐  ┌───────┐
+ │   P   │  │   P   │  │   P   │  │   P   │
+ ├───┬───┤  ├───┬───┤  ├───┬───┤  ├───┬───┤
+ │Mem│ R │  │Mem│ R │  │Mem│ R │  │Mem│ R │
+ └───┴─┬─┘  └───┴─┬─┘  └───┴─┬─┘  └───┴─┬─┘
+       │          │          │          │
+ ┌─────┴──────────┴──────────┴──────────┴─┐
+ │              interconnect              │
+ └────────────────────────────────────────┘
 ```
 
 | | **Decoupled** | **Coupled** |
 |---|---|---|
-| Memory sits | on the **far side** of the interconnect | **with** the processor, behind a router (R) |
-| Every access | crosses the interconnect | local access is **free**; remote crosses |
-| Latency | uniform | **non-uniform** |
-| Leads to | UMA | NUMA |
+| Memory sits | across the network | next to the processor |
+| Access time | the same for all | local fast, remote slow |
+| Gives you | **UMA** | **NUMA** |
 
-**[note]** The `R` in the coupled diagram is a **router** — the coupled node packages processor, memory and routing together. That's what slide 12 calls a **direct network** ("glueless MP"): no separate router chips needed.
+These two shapes come back again and again: SMP/DSM (§2), indirect/direct networks (§8), UMA/NUMA (§9).
 
 ---
 
 ## 4. Four multiprocessor organizations
 
-Slide 5 walks a progression from impractical to what everyone actually builds.
+**The idea:** four ways to arrange processors, caches and memory, from impractical to what every modern chip uses. The key moment is **(c)**: giving each processor a **private cache** makes it fast, but creates the **cache coherence** problem.
 
-| | Organization | Properties |
-|---|---|---|
-| **(a)** | **"Dance-hall" / SMP** | All processors on one side, all memory modules on the other side of the interconnect. Access time to memory is **the same for all processors**. **Not practical; no cache** |
-| **(b)** | **SMP with shared level-1 cache** | **No replication** but **higher hit latency** than in (c) |
-| **(c)** | **SMP with private caches** | each processor has its own cache |
-| **(d)** | **SMP with private caches and shared level-2 cache** | **Popular for chip multiprocessors (CMPs)** |
+```
+ (a) Dance-hall       (b) Shared L1        (c) Private caches   (d) Private L1 + shared L2
+ P   P   P   P        P   P   P   P        P   P   P   P        P   P   P   P
+ │   │   │   │        │   │   │   │        $   $   $   $        L1  L1  L1  L1
+ └───┴─┬─┴───┘        └───┴─┬─┴───┘        └───┴─┬─┴───┘        └───┴─┬─┴───┘
+  interconnect          shared L1           interconnect          shared L2
+ ┌───┬─┴─┬───┐              │                    │                    │
+ M   M   M   M            memory               memory               memory
+```
+($ = a private cache)
 
-### Reading the progression
+| | Organization | What the slide says | In plain words |
+|---|---|---|---|
+| **(a)** | **"Dance-hall"** SMP | All memory on the other side of the interconnect; same access time for all processors. **Not practical; no cache** | Every single access crosses the network, which jams immediately. It's only here as the baseline. |
+| **(b)** | SMP with **shared L1** | **No replication**, but **higher hit latency** than (c) | One cache for everyone, so there's only ever one copy (no coherence problem). But a cache shared by many must be bigger and further away, and requests queue up. |
+| **(c)** | SMP with **private caches** | — | Each processor has a small, close cache, so hits are fast. ⚠️ But the **same data can now be in several caches** at once. |
+| **(d)** | Private caches + **shared L2** | **Popular for CMPs** | Private L1s for speed, plus one big shared L2 (or L3) for capacity and as a common meeting point. This is what multicore chips look like. **CMP** (chip multiprocessor) is the formal name for a multicore chip. |
 
-**(a) is the textbook picture and nobody builds it.** Without caches, every single memory access crosses the interconnect — which saturates immediately. It exists on the slide to establish the baseline that the other three improve on.
+### Why (c) creates the coherence problem
 
-**(b) shares one L1 among all processors.** The upside is stated: **no replication** — only one copy of any line exists, so there is no coherence problem at all. The downside is **higher hit latency**, because a cache shared by *n* processors must be physically larger and further away, and must arbitrate between simultaneous requests.
+| Step | P1's cache | P2's cache | Memory |
+|---|---|---|---|
+| P1 reads X | X = 5 | — | 5 |
+| P2 reads X | X = 5 | X = 5 | 5 |
+| P1 writes X = 9 | X = **9** | X = 5 | 5 *(not updated yet, write-back)* |
+| P2 reads X | 9 | **5 ❌ stale** | 5 |
 
-**(c) gives each processor its own cache.** Hit latency is now low, because the cache is small and right next to its processor.
+> 💡 Everyone gets a photocopy of the shared plan. One person edits their copy. The others keep working from the old version and don't know it.
 
-> ⚠️ **And this is the exact moment the coherence problem is created.** Private caches mean the
-> same memory line can sit in **several caches at once**. If one processor writes its copy, the
-> others are silently stale. Organization (b) avoided this by having no replication; (c) buys speed
-> and inherits the problem.
-
-**(d) is (c) plus a shared L2 — and it is what modern chips are.** Private L1s for speed, a shared L2 (or L3) for capacity and as a common point where coherence can be managed. The slide notes it is **popular for chip multiprocessors (CMPs)**, which is the formal name for a multicore chip.
-
-> 📌 **The whole of topic 7 exists because the industry chose (d) over (b)** — it traded a
-> hardware-maintained coherence problem for lower hit latency. Keep that trade in mind: coherence
-> is not an accident, it's the price of private caches.
+> 📌 The industry chose (d) over (b): fast private caches, in exchange for having to keep copies in agreement. **Coherence isn't an accident; it's the price of private caches.** Topic 7 is about paying it.
 
 ---
 
 ## 5. Who makes the memory shared?
 
-> **Hardware shared memory:** hardware routes memory requests from processor to memory element containing the requested location
-> - And **maintains "cache coherence"** in the process
+**The idea:** memory can be made shared by **hardware**, which shares the physical memory and moves cache lines, or by **software** (the OS), which shares virtual memory and moves whole pages over the network.
+
+> **Hardware shared memory:** hardware routes memory requests from processor to the memory element containing the requested location, and **maintains "cache coherence"** in the process
 >
 > **Software shared memory:** software makes remote memory accessible
 > - Example: **Distributed Shared Virtual Memory**
->   - Threads see a **single unified virtual memory space**
->   - **Virtual memory manager (in the OS)** distributes virtual memory pages across multiple machines
->   - Uses **network to deliver a page** to the requesting machine
+>   - Threads see a single unified virtual memory space
+>   - Virtual memory manager (in the OS) distributes virtual memory pages across multiple machines
+>   - Uses network to deliver a page to the requesting machine
 >
-> **HW SM makes physical memory shared**
-> **SW SM makes a higher abstraction (e.g. virtual mem) shared**
+> **HW SM makes physical memory shared. SW SM makes a higher abstraction (e.g. virtual mem) shared.**
 
 | | **Hardware shared memory** | **Software shared memory** |
 |---|---|---|
-| What is shared | **physical** memory | a **higher abstraction** (virtual memory) |
-| Who does the work | hardware routing + coherence protocol | the OS virtual memory manager |
-| Unit of transfer | **cache line** (~64 bytes) | **page** (~4 KB) |
-| Over what | the interconnect | the network |
-| Coherence | maintained in hardware | managed in software |
+| What is shared | **physical** memory | **virtual** memory |
+| Who does the work | hardware: routing + coherence | the OS virtual memory manager |
+| Unit moved | **cache line** (~64 B) | **page** (~4 KB) |
+| Moves over | the interconnect | the network |
 
-**[note] How software shared memory actually works.** It reuses the page-fault mechanism from Lecture 2 §10. A thread touches a virtual address whose page lives on another machine → page fault → the OS handler fetches that page over the network and maps it in. The program thinks it has one flat address space; the OS is quietly shipping 4 KB pages between machines.
+**How software shared memory works** (it reuses page faults from Lecture 2):
+1. A thread touches an address whose page lives on another machine.
+2. That causes a **page fault**.
+3. The OS fetches the page over the network and maps it in locally.
+4. The thread carries on, never knowing the page came from elsewhere.
 
-The catch is **granularity**. The unit is a whole page, so two threads writing *different variables that happen to share a page* will bounce it back and forth endlessly. That's **false sharing** — the same pathology exists in hardware coherence at cache-line granularity, where it is one of the most common causes of mysteriously slow parallel code.
+### ⚠️ The catch: false sharing
+
+Two threads write **different variables that happen to sit in the same unit** (same page, or same cache line).
+
+```
+one 64-byte cache line:   [ countA | countB | ...unused... ]
+Thread 1 on P1: countA++  (over and over)
+Thread 2 on P2: countB++  (over and over)
+```
+The threads never touch each other's variable, but the system moves the **whole line** (or page). So it keeps bouncing P1 → P2 → P1 …, and both threads run slowly. It's worse with pages (4 KB), but it also happens with hardware cache lines, and it's a common cause of mysteriously slow parallel code. **Fix:** put the variables in separate lines or pages (padding).
 
 ---
 
 ## 6. Shared vs point-to-point networks
 
+**The idea:** a **bus** is one shared wire that everyone hears: one hop away, but only one transfer at a time, so it doesn't scale. A **point-to-point** network has many separate links: several transfers at once and it scales to thousands of nodes, but a message may cross many hops.
+
 > **Shared medium (a.k.a. bus)**
-> - 🔴 **All elements connected to a shared physical medium**
-> - **Low latency, low bandwidth**
-> - **Doesn't scale to large number of elements**
-> - **Simpler protocols (e.g. cache coherence)**
+> - All elements connected to a shared physical medium
+> - Low latency, low bandwidth
+> - Doesn't scale to large number of elements
+> - Simpler protocols (e.g. cache coherence)
 >
 > **Point-to-point networks**
-> - 🔴 **Each link is only connected to two end points**
-> - Many examples: **fully connected, ring, crossbar, (fat) tree, mesh, torus, hypercube, …**
-> - **High latency (many "hops"), higher bandwidth per element**
->   - **Scales to 1000s of elements**
-> - **Complex protocols (e.g. cache coherence)**
+> - Each link is only connected to two end points
+> - Many examples: fully connected, ring, crossbar, (fat) tree, mesh, torus, hypercube, …
+> - High latency (many "hops"), higher bandwidth per element
+>   - Scales to 1000s of elements
+> - Complex protocols (e.g. cache coherence)
 
-| | **Shared medium (bus)** | **Point-to-point** |
+**Bus:** one wire that everyone is attached to
+```
+ P1    P2    P3    P4
+ │     │     │     │
+═╧═════╧═════╧═════╧═══
+```
+
+**Point-to-point (a ring here):** each link joins exactly two nodes
+```
+ P1 ──── P2
+ │       │
+ P4 ──── P3
+```
+
+| | **Bus** | **Point-to-point** |
 |---|---|---|
-| Structure | everything on one physical medium | each link joins exactly **two** endpoints |
-| Latency | **low** | **high** — many hops |
-| Bandwidth | **low** (shared among all) | **higher per element** |
-| Scaling | poor — tens | **1000s of elements** |
-| Coherence protocol | **simpler** | **complex** |
+| Latency | **low**: one hop to anyone | **high**: may cross many hops |
+| Bandwidth | **low**: one transfer at a time, shared | **higher**: many links work at once |
+| Scales to | tens | **thousands** |
+| Coherence protocol | **simpler** (snooping) | **complex** (directory) |
 
-### Why the coherence protocol difficulty flips
+**"Low latency but low bandwidth" isn't a contradiction.** Latency is low because the wire reaches everyone directly. Bandwidth is low because only one transfer can use the wire at a time, so 16 processors each get roughly 1/16 of it.
 
-This is the most important row and the slides don't explain it, so:
+### Why coherence is easier on a bus
 
-**On a bus, every message is seen by everyone, automatically.** It is a broadcast medium. So a cache can simply *listen* to every transaction and react — "someone is writing address X and I have a copy, so I'll invalidate mine." That is **snooping**, and it is nearly free because the broadcast already exists.
+> 💡 **Bus = a meeting room.** Everyone hears everything. If P1 announces "I'm writing X", anyone holding a copy of X hears it and throws their copy away. That's **snooping**: caches listen to all traffic, and it costs almost nothing, because the broadcast already happens.
+>
+> **Point-to-point = phone calls.** A call from P1 to memory is heard by no one else. So someone has to **keep a list of who has a copy** of each line and call them individually. That list is a **directory**, and directory protocols are much more complex.
 
-**On a point-to-point network there is no broadcast.** A message goes from A to B and nobody else sees it. So if a processor wants to write a line, it has no way to tell the others — unless something *tracks who has copies*. That something is a **directory**, and directory protocols are substantially more complex.
-
-> 📌 **Bus ⇒ snooping. Point-to-point ⇒ directory.** That pairing is the main structural fact of
-> topic 7, and slide 7 is where it is seeded.
-
-**[note] "Low latency, low bandwidth" for a bus looks contradictory** until you separate the two. Latency is low because the destination is *one hop away* — the wire physically reaches everyone. Bandwidth is low because that one wire is **shared**, so only one transfer can happen at a time and every added processor gets a smaller slice.
-
-A point-to-point network inverts both: several links carry traffic simultaneously (high aggregate bandwidth) but a message may traverse many hops to arrive (high latency).
+> 📌 **Bus → snooping. Point-to-point → directory.** That pairing is the main structure of topic 7.
 
 ---
 
 ## 7. Three real interconnects
 
-The deck gives one example at each level of the hierarchy from slide 4.
+**The idea:** one real machine at each level of the hierarchy, each using a **different network shape**. Real systems mix them.
 
-### Chip level — Intel Xeon E5-2600 (slide 8)
-
-> - **Double ring interconnect**
-> - **Connecting 8 cores and 8 banks of L3**
-
-Eight cores down the sides, eight 2.5 MB L3 banks in the middle, two counter-rotating rings joining them, plus stops for QPI, PCIe and the memory controller.
-
-**[note] Why a ring, and why two?** A ring is cheap — each stop needs only two links — and it scales reasonably to a dozen or so stops. Two rings running in **opposite directions** halves the worst-case hop count: instead of travelling up to 7 stops one way, you pick whichever direction is shorter, so at most 4.
-
-Note also that the L3 is **banked** — the 20 MB is split into 8 pieces, each physically next to a core, with addresses interleaved across them. So L3 access time already depends on which bank holds your address. **NUMA exists inside a single chip.**
-
-### Node level — Intel QuickPath Interconnect (slide 9)
-
-> - **Fully connected**
-> - **Connecting processor sockets to each other and IO hubs**
-> - **Memory directly connected to processor sockets using a memory bus**
-
-Four CPU sockets, each with its own memory, every socket linked directly to every other, plus two I/O hubs.
-
-This is the **coupled configuration** from slide 4 at socket scale — and because memory hangs off each socket, reaching another socket's memory costs an extra hop. **This is textbook NUMA**, and it is what you are running on any multi-socket server.
-
-**[note] Fully connected works here only because there are four sockets.** A fully connected network of *n* nodes needs *n(n−1)/2* links — 6 for four nodes, but 4,950 for a hundred. It does not scale, which is why the rack level uses switches instead.
-
-### Rack level — SGI Altix 4700 (slide 11)
-
-> - **Crossbar switches**
-> - **Connecting nodes (server blades) to each other**
-
-Router boards with crossbar switches joining ten blades, linked onward by NUMAlink.
-
-A **crossbar** is a switch that can connect any input to any output simultaneously, as long as no two want the same output. Full connectivity without *n²* wires between endpoints — you pay for it in the switch, which itself costs *n²* internally but is built once in one chip rather than as cabling.
-
-### Reading the three together
-
-| Level | Interconnect | Topology | Scale |
+| Level | Example | Shape | Joins |
 |---|---|---|---|
-| **Chip** | Xeon E5-2600 double ring | ring | 8 cores |
-| **Node** | Intel QPI | fully connected | 4 sockets |
-| **Rack** | SGI Altix NUMAlink | crossbar switches | 10 blades per enclosure |
+| **Chip** | Intel Xeon E5-2600 | **double ring** | 8 cores + 8 L3 banks |
+| **Node** (one server) | Intel QuickPath Interconnect (QPI) | **fully connected** | 4 sockets + I/O hubs |
+| **Rack** | SGI Altix 4700 | **crossbar switches** | server blades |
 
-> 📌 **Three levels, three different topologies, in one machine.** That is slide 4's "almost always
-> there is a hierarchical structure" made real — and it is why the flat view presented to the
-> programmer is a fiction, however convenient.
+### Chip level: Xeon E5-2600, double ring (slide 8)
+
+Eight cores and eight L3 banks (2.5 MB each, 20 MB in total) sit on two rings, plus stops for QPI, PCIe and the memory controller.
+- **Why a ring?** Each stop needs only two links, so it's cheap, and it works fine for about a dozen stops.
+- **Why two rings, in opposite directions?** A message can go whichever way is shorter. With 8 stops, a one-way ring can take up to 7 hops; with two directions it's at most 4.
+- **The L3 is split into banks**, each next to a core. A core reaching its own bank is faster than reaching the far side of the chip. So **access time already depends on location inside one chip.**
+
+### Node level: Intel QPI, fully connected (slide 9)
+
+Four sockets, each with **its own memory**, and every socket linked directly to every other one.
+- This is the **coupled** shape (§3) at socket scale. Another socket's memory costs an extra hop → classic **NUMA**. Any multi-socket server works this way.
+- **Fully connected only works for small counts.** Links needed = n(n−1)/2:
+
+| Nodes | Links |
+|---|---|
+| 4 | 6 |
+| 8 | 28 |
+| 100 | 4,950 |
+
+### Rack level: SGI Altix 4700, crossbar switches (slide 11)
+
+Router boards with **crossbar switches** join the server blades, which are linked onward by **NUMAlink**.
+- A **crossbar** is a switch that can connect **any input to any output at the same time**, as long as no two inputs want the same output.
+- 💡 Like an old telephone switchboard: many calls at once, each on its own path.
+- You get full connectivity without running a cable between every pair of nodes. The switch is complex inside, but it's built once, in one place.
+
+> 📌 Three levels, three different shapes, in one machine. That's §3's "hierarchical structure" in real hardware, and why the flat memory the programmer sees is a convenient fiction.
 
 ---
 
 ## 8. Organizing point-to-point networks
 
-> **Network topology: organization of network**
-> - **Tradeoff performance (connectivity, latency, bandwidth) and cost**
->
-> **Router chips**
-> - Networks that require **separate router chips** are **indirect**
-> - Networks that use **processor/memory/router packages** are **direct**
->   - Fewer components, **"Glueless MP"**
+**The idea:** a network's shape (**topology**) trades performance for cost. Routing is done either by **separate router chips** (**indirect**) or by routers **built into each node** (**direct**, "glueless").
 
+> - **Network topology:** organization of network
+>   - Tradeoff performance (connectivity, latency, bandwidth) and cost
+> - **Router chips**
+>   - Networks that require **separate router chips** are **indirect**
+>   - Networks that use **processor/memory/router packages** are **direct**
+>     - Fewer components, **"Glueless MP"**
+
+**Indirect (tree):** the routers are separate chips that only route
 ```
-        INDIRECT TREE                           DIRECT MESH
-             ┌───┐                        ┌───────┐    ┌───────┐
-        ┌───▶│ R │◀───┐                   │ CPU($)│    │ CPU($)│
-        │    └───┘    │                   ├────┬──┤    ├──┬────┤
-     ┌──┴┐         ┌──┴┐                  │Mem │R │◀──▶│R │ Mem│
-  ┌─▶│ R │◀─┐   ┌─▶│ R │◀─┐               └────┴┬─┘    └┬─┴────┘
-  │  └───┘  │   │  └───┘  │                     │       │
-┌─┴──┬─┐ ┌──┴─┬─┐ ...                           ▼       ▼
-│Mem │R│ │Mem │R│                         ┌────┬──┐    ┌──┬────┐
-├────┴─┤ ├────┴─┤                         │Mem │R │◀──▶│R │ Mem│
-│CPU($)│ │CPU($)│                         ├────┴──┤    ├──┴────┤
-└──────┘ └──────┘                         │ CPU($)│    │ CPU($)│
-                                          └───────┘    └───────┘
+             [R]
+           ┌──┴──┐
+          [R]   [R]
+          ┌┴┐   ┌┴┐
+          N N   N N        N = node (CPU + cache + memory)
+```
+
+**Direct (mesh):** every node has its own built-in router
+```
+ N ── N ── N
+ │    │    │
+ N ── N ── N               N = CPU + cache + memory + router
+ │    │    │
+ N ── N ── N
 ```
 
 | | **Indirect** | **Direct** |
 |---|---|---|
-| Routing done by | **separate router chips** | routers **integrated** into the processor/memory package |
-| Component count | more | **fewer** — "Glueless MP" |
-| Example on the slide | tree | mesh |
+| Routing done by | separate router chips | a router inside each node package |
+| Parts needed | more | **fewer** ("glueless") |
+| Slide's example | tree | mesh |
+| Looks like | decoupled (§3) | coupled (§3) |
 
-**[note] "Glueless"** is industry slang: "glue logic" is the extra support chips a design needs around its main components. A glueless multiprocessor needs none — you wire the processor packages straight to each other, because each already contains its router. Cheaper boards, fewer parts, lower latency.
-
-Note the direct-mesh picture is the **coupled configuration** from slide 4, and the indirect tree is closer to **decoupled**. The same two shapes keep recurring at every level.
+**"Glueless":** "glue logic" means the extra support chips a design needs around its main parts. A glueless multiprocessor needs none: you wire the processor packages straight to each other, because each one already contains its router. Fewer parts, cheaper boards, lower latency.
 
 ---
 
 ## 9. UMA and NUMA
 
-> **Uniform Memory Access (UMA):** **Equal latency to memory from all processors**
-> - **Simpler software, doesn't matter where you put data**
-> - **Lower peak performance**
-> - **Common in bus-based systems**
+**The idea:** **UMA** = every processor reaches every memory in the same time, so data placement doesn't matter. **NUMA** = your own memory is faster than other nodes' memory. NUMA can be faster overall, **but only if each thread's data is in its own node.**
+
+> **Uniform Memory Access (UMA):** equal latency to memory from all processors
+> - Simpler software, doesn't matter where you put data
+> - Lower peak performance
+> - Common in bus-based systems
 >
-> **Non-Uniform Memory Access (NUMA):** **Local memory access faster than remote**
-> - **More complex software: where you put data matters**
-> - **Higher peak performance: assuming proper data placement**
+> **Non-Uniform Memory Access (NUMA):** local memory access faster than remote
+> - More complex software: where you put data matters
+> - Higher peak performance: assuming proper data placement
 
-```
-         UMA EXAMPLE                              NUMA EXAMPLE
-  ┌──────┐┌──────┐┌──────┐┌──────┐        ┌──────┐┌──────┐┌──────┐┌──────┐
-  │CPU($)││CPU($)││CPU($)││CPU($)│        │CPU($)││CPU($)││CPU($)││CPU($)│
-  └──┬───┘└──┬───┘└──┬───┘└──┬───┘        ├───┬──┤├───┬──┤├───┬──┤├───┬──┤
-     │       │       │       │            │Mem│R ││Mem│R ││Mem│R ││Mem│R │
-  ┌──┴───────┴───────┴───────┴──┐         └─┬────┘└─┬────┘└─┬────┘└─┬────┘
-  │        Interconnect          │           │       │       │       │
-  └──┬───────┬───────┬───────┬──┘         ┌──┴───────┴───────┴───────┴──┐
-     │       │       │       │            │        Interconnect          │
-  ┌──┴──┐┌──┴──┐┌──┴──┐┌──┴──┐            └──────────────────────────────┘
-  │ Mem ││ Mem ││ Mem ││ Mem │
-  └─────┘└─────┘└─────┘└─────┘
-```
+The pictures are the two shapes from §3: **UMA = decoupled, NUMA = coupled.**
 
-Same two shapes as slide 4's decoupled/coupled — **UMA is the decoupled configuration, NUMA is the coupled one.**
+> 💡 **UMA** = all files in one central archive: everyone walks the same distance, and it gets crowded. **NUMA** = each office has its own cabinet: your own cabinet is seconds away, someone else's is down the corridor. Great **if** you keep your files in your own office.
 
-### The trade-off, stated honestly
+### Example: why placement matters
 
-> ⚠️ **The counter-intuitive pair:** UMA has **lower peak performance** but **simpler software**;
-> NUMA has **higher peak performance** but **only assuming proper data placement**.
+Illustrative numbers: 4 nodes, local access 100 ns, remote access 300 ns.
 
-NUMA is not unconditionally faster. It is faster *if* each thread's data sits in its own node's memory. Get the placement wrong — every thread hammering one node's memory — and NUMA is **worse** than UMA, because you've added hops without adding locality.
+| Placement | Threads on nodes 1–3 | Node 0's memory | Result |
+|---|---|---|---|
+| **Good:** each thread's data in its own node | all accesses local, 100 ns | normal load | ✅ fast; all 4 memories work in parallel |
+| **Bad:** all data on node 0 | every access remote, 300 ns | handles everyone's traffic, becomes a bottleneck | ❌ can be **worse than UMA** |
 
-**[note]** This is why real systems expose NUMA to software: Linux has `numactl` and a first-touch allocation policy (a page is placed in the memory of whichever node first writes it), and OpenMP has thread-affinity controls. All of it exists so the programmer can get data placement right — which is precisely the "more complex software" the slide warns about.
+> ⚠️ **NUMA is not automatically faster.** "Higher peak performance" holds only *with proper data placement*. Bad placement adds hops without adding any locality.
 
-It is also the sharpest example of slide 4's point: the programming model says memory is flat, the hardware says it isn't, and the gap shows up as a performance cliff rather than a compile error.
+This is why real systems let software control placement: Linux's `numactl`, and the **first-touch** policy (a page is placed in the memory of the node that first writes it), plus OpenMP thread-affinity settings. That's the "more complex software" on the slide.
 
 ---
 
 ## 10. Why caches matter even more in a multiprocessor
 
-> Cache memory hierarchy is important for **single-processor** systems to bridge the **speed gap** between processor and memory.
+**The idea:** on one processor, caches hide slow memory. On a multiprocessor they matter for **two more reasons**: the network makes memory **even slower**, and memory and network bandwidth are **shared**, so **your cache miss slows everyone else down too.**
+
+> Cache memory hierarchy is important for single-processor systems to bridge the speed gap between processor and memory.
 >
-> It is important in a **multiprocessor** for **two respects**:
-> 1. **The interconnect increases the latency to memory.**
-> 2. **Since memory and interconnect are shared resources, their bandwidth is precious.** The cache hierarchy helps reduce the penalty of memory accesses and the **pressure on the memory and interconnect**.
+> It is important in a multiprocessor for two respects:
+> 1. The interconnect increases the latency to memory.
+> 2. Since memory and interconnect are shared resources, their bandwidth is precious. The cache hierarchy helps reduce the penalty of memory accesses and the pressure on the memory and interconnect.
 
-Two distinct arguments, and the second is the new one.
+| Reason | Plain words |
+|---|---|
+| **1. Latency** | Memory was already ~200 cycles away on one processor (Lecture 2). Now add network hops, waiting for the network, and maybe another node's memory. A miss costs even more. |
+| **2. Bandwidth** (new) | The network and memory are **shared**. Every miss uses bandwidth that all other processors also need. |
 
-**Reason 1 — latency.** On a uniprocessor, memory is ~200 cycles away (Lecture 2 §8). On a multiprocessor you add the interconnect on top: a hop or several, arbitration, possibly another node's memory controller. The gap the cache has to bridge got wider.
+> 💡 One car on an empty road vs one car in rush hour. Every extra trip (miss) you make adds to the traffic that everyone else is stuck in.
 
-**Reason 2 — bandwidth, and this one is specific to multiprocessors.** The interconnect and memory are **shared**. Every miss you take consumes bandwidth that every *other* processor also needs. So a cache miss on a multiprocessor is not just slow for you — it **slows everyone down**.
-
-> 📌 Put the two together and you get the central scaling fact: **a cache miss costs more and hurts
-> others.** It is why miss rate matters disproportionately here, and why organization (d) from
-> slide 5 — private L1 plus shared L2 — is what everyone builds.
+> 📌 **On a multiprocessor, a cache miss costs more *and* hurts others.** That's why everyone builds organization (d): private L1s plus a shared L2.
 
 ---
 
 ## 11. The two big issues
 
-The deck's closing slide, and the agenda for the rest of the course:
+**The idea:** sharing memory between processors raises two big questions. **Coherence:** do all processors see the same values for **one** variable? **Consistency:** do they see writes to **different** variables in the same order? Plus a third, smaller one: **synchronization**, i.e. hardware support (atomic operations) for locks.
 
 > **Two big ones**
 > - **Cache coherence** (single memory location/variable)
@@ -427,91 +482,132 @@ The deck's closing slide, and the agenda for the rest of the course:
 >
 > **A (slightly) smaller one (very important nonetheless)**
 > - **Synchronization support**
->   - Special instructions, e.g. **atomic operations**
->   - Advanced features such as **full/empty bits**
+>   - Special instructions, e.g. atomic operations
+>   - Advanced features such as full/empty bits
 
-### The distinction, since he flags that it's often confused
-
-The parenthetical is the entire definition, so hold onto it:
+### Coherence vs consistency
 
 | | **Cache coherence** | **Memory consistency** |
 |---|---|---|
-| Scope | **ONE** memory location | **MULTIPLE** memory locations |
-| Question | *Do all processors agree on the sequence of values this variable took?* | *Do all processors agree on the order in which operations to **different** variables happened?* |
-| Fails when | P1 writes X; P2 still reads the old X from its stale cached copy | P1 writes A then B; P2 sees B's new value but A's old one |
+| About | **ONE** memory location | **SEVERAL** memory locations |
+| Question | Does everyone agree on the values *this one variable* took? | Does everyone agree on the **order** of writes to *different* variables? |
+| Goes wrong when | P2 keeps reading an old copy of X after P1 wrote it (the table in §4) | P1 writes A then B; P2 sees the new B but the old A |
+| Caused by | private caches holding copies | hardware reordering or delaying writes |
 
-**Coherence** is about keeping copies of **the same thing** in step. It is a hardware problem created by private caches — exactly the problem organization (c)/(d) introduced in §4.
-
-**Consistency** is about the **ordering between different things**. Even with perfect coherence on every individual variable, a machine may reorder or delay writes, so another processor sees them in a different order than they were issued.
-
-A quick example of the second:
-
+**A consistency example:**
 ```
     P1                      P2
-    A = 1;                  while (flag == 0) ;   // wait
-    flag = 1;               print(A);             // prints... 0?
+    A = 1;                  while (flag == 0) ;   // wait for the signal
+    flag = 1;               print(A);             // prints 0 ?!
 ```
+P1 sets A, then raises the flag. P2 waits for the flag, then reads A. It should print **1**. But if the hardware lets the write to `flag` become visible **before** the write to `A`, P2 can see `flag = 1` while A is still 0, and print **0**.
 
-Every variable here can be perfectly coherent and `A` can still print as 0 — if the hardware let `flag`'s write become visible before `A`'s. The memory consistency model is the contract that says what reorderings are allowed.
+Each variable on its own can be perfectly coherent; the problem is the **order between them**. The **memory consistency model** is the hardware's contract for which reorderings are allowed.
 
-> 🔮 **This is where Lecture 4 slide 8's throwaway bullet lands:** *"need to know how the hardware
-> interleaves accesses from different processors."* That was the seed; this is the harvest.
+> 💡 You text a friend "dinner's ready", then "come downstairs". If the messages arrive in the wrong order, both are correct on their own, but the order breaks the meaning.
+
+(This is the "need to know how the hardware interleaves accesses from different processors" point from Lecture 4.)
 
 ### Synchronization support
 
-> - **Special instructions, e.g. atomic operations**
-> - **Advanced features such as full/empty bits**
+**Why hardware has to help.** Lecture 4's `sum += mysum` is really three steps: read, add, write. Two threads can interleave them:
 
-**[note]** An **atomic operation** completes indivisibly — no other processor can observe or interfere with it halfway through. This is the hardware that makes `LOCK`/`UNLOCK` from Lecture 4 §9 possible: recall `sum += mysum` is really read-add-write, and the lock exists to stop those three steps interleaving. Something has to implement the lock itself atomically, and ordinary loads and stores cannot — hence instructions like test-and-set, compare-and-swap, or load-linked/store-conditional.
+| Step | Thread A (mysum = 5) | Thread B (mysum = 3) | `sum` in memory |
+|---|---|---|---|
+| 1 | read sum → 10 | | 10 |
+| 2 | | read sum → 10 | 10 |
+| 3 | 10 + 5 = 15 | | 10 |
+| 4 | | 10 + 3 = 13 | 10 |
+| 5 | write 15 | | 15 |
+| 6 | | write 13 | **13 ❌** (should be 18) |
 
-**Full/empty bits** are a tag on each memory word marking it full or empty, so a read can block until a write has happened. It turns every memory location into a tiny synchronisation primitive — elegant, and expensive in bits, which is why only a few machines (notably the Tera/Cray MTA) ever did it.
+A **lock** stops this. But the lock itself is the same kind of read-then-write:
+```
+while (L == 1) ;   // wait until the lock is free
+L = 1;             // take it
+```
+Both threads can read L = 0 before either writes 1, and both take the lock. The same race, one level down.
 
-This is **course outcome 4**: *"Implement synchronization methods for shared memory and message passing parallel computers."*
+**Atomic operations** fix it. An **atomic** instruction does its read and write **as one indivisible step**, so no other processor can get in between. Examples: **test-and-set** (read the old value and set it to 1, in one step), **compare-and-swap**, **load-linked / store-conditional**. Ordinary loads and stores can't do this; it needs special instructions.
+
+**Full/empty bits:** each memory word gets an extra bit saying "full" or "empty". A read can **wait until the word is full** (someone has written it), and a write can wait until it's empty. Every word becomes a tiny synchronization point.
+> 💡 A mailbox with a flag: you only collect the letter once the flag is up.
+
+Elegant, but it costs extra bits on every word, so only a few machines used it (e.g. the Tera/Cray MTA).
 
 ---
 
 ## 12. Summary sheet
 
-### Definitions worth memorising
+### Definitions
 
 | Term | Definition |
 |---|---|
-| **TLP** | Multiple program counters; MIMD; tightly-coupled shared-memory multiprocessors |
-| **Grain size** | Amount of computation assigned to each thread |
-| **SMP** | Small number of cores sharing single memory with **uniform** latency |
-| **DSM** | Memory distributed among processors; **non-uniform** latency (NUMA) |
-| **UMA** | Equal latency from all processors; simpler software; lower peak performance |
-| **NUMA** | Local faster than remote; harder software; higher peak **given proper placement** |
-| **Direct network** | Router integrated with processor/memory package — "glueless MP" |
-| **Indirect network** | Requires separate router chips |
-| **Cache coherence** | Agreement about a **single** memory location |
-| **Memory consistency** | Ordering across **multiple** memory locations |
+| **TLP** | multiple program counters · MIMD · tightly-coupled shared-memory multiprocessors |
+| **Grain size** | amount of computation assigned to each thread |
+| **SMP** | small number of cores sharing one memory with **uniform** latency |
+| **DSM** | memory distributed among processors · **non-uniform** latency (NUMA) |
+| **UMA** | same latency from all processors · simpler software · lower peak performance |
+| **NUMA** | local faster than remote · placement matters · higher peak **with proper placement** |
+| **Direct network** | router inside each processor/memory package ("glueless MP") |
+| **Indirect network** | needs separate router chips |
+| **Cache coherence** | agreement about **one** memory location |
+| **Memory consistency** | ordering across **several** memory locations |
+| **Atomic operation** | read + write done as one indivisible step |
 
 ### The four organizations
 
-| | Organization | Key property |
+| | Organization | Key point |
 |---|---|---|
-| (a) | Dance-hall SMP | Not practical; no cache |
-| (b) | SMP + shared L1 | No replication, but higher hit latency |
-| (c) | SMP + private caches | ⚠️ creates the coherence problem |
-| (d) | SMP + private caches + shared L2 | **Popular for CMPs** — what modern chips are |
+| (a) | dance-hall SMP | not practical; no cache |
+| (b) | shared L1 | no replication, but higher hit latency |
+| (c) | private caches | fast hits, ⚠️ **creates the coherence problem** |
+| (d) | private caches + shared L2 | popular for CMPs: what multicore chips are |
 
 ### Networks
 
-| | Shared medium (bus) | Point-to-point |
+| | Bus | Point-to-point |
 |---|---|---|
 | Latency | low | high (many hops) |
-| Bandwidth | low | higher per element |
-| Scale | tens | **1000s** |
-| Coherence | **simpler** → snooping | **complex** → directories |
+| Bandwidth | low (shared) | higher per element |
+| Scale | tens | 1000s |
+| Coherence | simpler → **snooping** | complex → **directory** |
 
-### The through-lines from earlier lectures
+| Real example | Level | Shape |
+|---|---|---|
+| Xeon E5-2600 | chip | double ring |
+| Intel QPI | node | fully connected (n(n−1)/2 links) |
+| SGI Altix 4700 | rack | crossbar switches |
 
-- **Grain size** = parallelism granularity (L4 §9) = the Mortar curve (L3 §8)
-- **"Contrary to the flat view of programming models"** = model/hardware mismatch (L4 slide 3)
-- **Private caches ⇒ coherence** = replicated caches + write-back (L2 §9)
-- **"How hardware interleaves accesses"** (L4 slide 8) = memory consistency, named here
-- **Atomic operations** = what makes L4's `LOCK`/`UNLOCK` implementable
+### Things worth memorising
+
+- **TLP = several program counters.** ILP and DLP work inside one.
+- **n processors need n threads**, and a grain that's too fine drowns in overhead.
+- **The hardware is a hierarchy**, not the flat memory the programming model shows.
+- **Decoupled → UMA, coupled → NUMA.** The same two shapes appear at every level.
+- **Private caches create coherence**; the industry accepted that for speed.
+- **NUMA is faster only with good data placement.**
+- **A miss on a multiprocessor costs more and slows everyone.**
+- **Coherence = one variable. Consistency = order across variables.**
+- **Locks need atomic instructions**, because a lock is itself a read-modify-write.
+
+### ⚠️ Traps
+
+| Trap | Remember |
+|---|---|
+| "direct" network | slide 3 (DSM) and slide 12 use the word differently |
+| NUMA faster? | only with proper data placement |
+| (b) vs (c) | (b) has no coherence problem; (c) creates it |
+| Bus latency vs bandwidth | low latency (one hop) and low bandwidth (shared wire) at the same time |
+| Coherence vs consistency | one location vs order across many |
+
+### Links to earlier lectures
+
+- **Grain size** = granularity (L4) = the overhead curve (L3)
+- **Flat model vs hierarchical hardware** = the model/hardware mismatch (L4)
+- **Software shared memory** reuses page faults (L2)
+- **Consistency** = "how hardware interleaves accesses" (L4)
+- **Atomic operations** are what make L4's `LOCK`/`UNLOCK` possible
 
 ---
 
@@ -524,7 +620,7 @@ This is **course outcome 4**: *"Implement synchronization methods for shared mem
 - Uses the **MIMD** model
 - Targeted for **tightly-coupled shared-memory multiprocessors**
 
-The first is the crispest: one PC = one instruction stream, so several PCs = several independent streams. ILP and DLP both live inside a single stream.
+One PC = one instruction stream, so several PCs = several independent streams. ILP and DLP both work inside a single stream.
 </details>
 
 <details>
@@ -532,85 +628,115 @@ The first is the crispest: one PC = one instruction stream, so several PCs = sev
 
 **Grain size** = the amount of computation assigned to each thread.
 
-Threads carry real creation, scheduling and synchronisation overhead. If each thread only processes a few array elements, **the overheads outweigh the benefit** — you spend more time managing threads than computing. That is the Mortar curve from Lecture 3 and the $P_{opt}=\sqrt{T_{MM}/T_{init}}$ result from Lecture 4.
+Creating, scheduling and synchronizing threads costs time. If each thread only handles a few array elements, **the overheads outweigh the benefit**: more time goes into managing threads than into computing.
 </details>
 
 <details>
 <summary><b>3.</b> Distinguish SMP from DSM.</summary>
 
-**SMP** — small number of cores sharing a **single** memory with **uniform** memory latency.
+**SMP:** a small number of cores sharing **one** memory with **uniform** latency.
 
-**DSM** — memory **distributed** among processors, **non-uniform** access latency (NUMA), processors connected via direct (switched) and non-direct (multi-hop) interconnection networks.
+**DSM:** memory **distributed** among processors, **non-uniform** latency (NUMA), joined by switched / multi-hop networks.
 
-Both present one global address space to the programmer; they differ in where memory physically sits.
+Both give the programmer one shared address space; they differ in where the memory physically sits.
 </details>
 
 <details>
-<summary><b>4.</b> Of the four organizations on slide 5, which creates the cache coherence problem and which is used in modern chips?</summary>
+<summary><b>4.</b> What does "contrary to the flat view of shared-memory programming models" mean?</summary>
 
-**(c) SMP with private caches** creates it — private caches mean the same line can sit in several caches at once, so one processor's write leaves the others stale. Organization (b), with a shared L1, has **no replication** and therefore no coherence problem at all, but pays in hit latency.
-
-**(d) SMP with private caches and shared level-2 cache** is what modern chips use — the slide says *"popular for chip multiprocessors (CMPs)."*
+The programming model presents memory as one flat space where every access looks the same. Real hardware is a **hierarchy** (chip, machine, across machines), and access time depends on where the data is. Correct code can still be slow if its data is far away.
 </details>
 
 <details>
-<summary><b>5.</b> Why does a bus make cache coherence simpler than a point-to-point network does?</summary>
+<summary><b>5.</b> Decoupled vs coupled configuration: which gives UMA and which NUMA?</summary>
 
-A bus is a **broadcast medium** — every element sees every transaction automatically. So a cache can simply listen and react ("someone is writing X and I hold a copy, so I'll invalidate it"). That is **snooping**, and it is nearly free.
+**Decoupled:** memory on the far side of the interconnect; every access crosses it → same latency for all → **UMA**.
 
-A point-to-point network has **no broadcast** — a message goes A→B and nobody else sees it. So something must explicitly track who holds copies: a **directory**. Directory protocols are substantially more complex.
+**Coupled:** memory next to each processor (with a router); local is fast, remote crosses the network → **NUMA**.
 </details>
 
 <details>
-<summary><b>6.</b> How can a bus be both "low latency" and "low bandwidth"?</summary>
+<summary><b>6.</b> Of the four organizations on slide 5, which creates the cache coherence problem, and which is used in modern chips?</summary>
 
-They measure different things.
+**(c) private caches** creates it: the same line can sit in several caches, so one processor's write leaves the other copies stale. (b), with a shared L1, has no replication and no coherence problem, but pays in hit latency.
 
-**Latency is low** because the destination is one hop away — the wire physically reaches everyone.
-**Bandwidth is low** because that wire is **shared**: only one transfer at a time, and every added processor gets a smaller slice.
-
-A point-to-point network inverts both — several links carry traffic simultaneously (high aggregate bandwidth) but messages traverse many hops (high latency).
+**(d) private caches + shared L2** is what modern chips use ("popular for CMPs").
 </details>
 
 <details>
-<summary><b>7.</b> Hardware vs software shared memory — what is shared in each, and at what granularity?</summary>
+<summary><b>7.</b> Hardware vs software shared memory: what is shared in each, and in what unit?</summary>
 
-**Hardware SM** shares **physical memory**. Hardware routes requests to the memory element holding the location and maintains cache coherence. Granularity: the **cache line** (~64 bytes).
+**Hardware:** **physical** memory. The hardware routes requests and keeps caches coherent. Unit: the **cache line** (~64 B).
 
-**Software SM** shares **a higher abstraction** — virtual memory. The OS virtual memory manager distributes pages across machines and uses the network to deliver a page to the requesting machine. Granularity: the **page** (~4 KB).
+**Software:** **virtual** memory. The OS spreads pages across machines and fetches them over the network on a page fault. Unit: the **page** (~4 KB).
 </details>
 
 <details>
-<summary><b>8.</b> Is NUMA always faster than UMA?</summary>
+<summary><b>8.</b> What is false sharing, and how do you fix it?</summary>
 
-**No.** NUMA has **higher peak performance — assuming proper data placement.** Get the placement wrong (every thread hammering one node's memory) and NUMA is *worse* than UMA, because you've added hops without adding locality.
-
-UMA's compensating advantage: **simpler software, doesn't matter where you put data.**
+Two threads write **different** variables that sit in the **same** cache line (or page). The system moves the whole unit, so it bounces between processors even though the threads never share data. Fix: put the variables in separate lines or pages (padding).
 </details>
 
 <details>
-<summary><b>9.</b> Give the two reasons caches matter in a multiprocessor beyond the single-processor reason.</summary>
+<summary><b>9.</b> How can a bus be both low latency and low bandwidth?</summary>
 
-1. **The interconnect increases the latency to memory** — the gap the cache must bridge is wider than on a uniprocessor.
-2. **Memory and interconnect are shared resources, so their bandwidth is precious.** The cache reduces **pressure on the memory and interconnect** — meaning your miss doesn't just slow you down, it slows everyone down.
+**Low latency:** the destination is one hop away, because the wire reaches everyone directly.
+**Low bandwidth:** that wire is shared, so only one transfer happens at a time and each processor gets a small slice.
 </details>
 
 <details>
-<summary><b>10.</b> Cache coherence vs memory consistency — state the difference in one line each.</summary>
+<summary><b>10.</b> Why is cache coherence simpler on a bus than on a point-to-point network?</summary>
 
-**Cache coherence** concerns a **single** memory location: do all processors agree on the sequence of values that one variable took?
+A bus is a **broadcast**: every cache sees every transaction, so caches can listen and invalidate their copies (**snooping**).
 
-**Memory consistency** concerns **multiple** memory locations: do all processors agree on the order in which operations to *different* variables became visible?
-
-The deck notes they are *"closely related but often confused."* Perfect coherence on every individual variable still permits a processor to observe two writes in the wrong order.
+On a point-to-point network nobody else sees a message, so something has to **track who has copies** of each line (a **directory**). That is much more complex.
 </details>
 
 <details>
-<summary><b>11.</b> Why is atomic-operation support necessary, given we already have locks?</summary>
+<summary><b>11.</b> A fully connected network has 8 nodes. How many links? Why isn't it used at rack scale?</summary>
 
-Because **the lock itself has to be implemented**. Lecture 4 showed `sum += mysum` is really read-add-write, and that the lock prevents those steps interleaving — but acquiring the lock is the same kind of read-modify-write and faces the same race.
+8 × 7 / 2 = **28** links. The count grows with n² (100 nodes would need 4,950), so it's only used for small counts, like QPI's 4 sockets. Racks use crossbar switches instead.
+</details>
 
-Ordinary loads and stores cannot do it. You need a hardware instruction that completes **indivisibly** — test-and-set, compare-and-swap, or load-linked/store-conditional. That is **course outcome 4**.
+<details>
+<summary><b>12.</b> Direct vs indirect networks (slide 12)?</summary>
+
+**Indirect:** needs **separate router chips** (e.g. a tree).
+**Direct:** each processor/memory package contains its own router (e.g. a mesh): fewer components, "glueless MP".
+</details>
+
+<details>
+<summary><b>13.</b> Is NUMA always faster than UMA?</summary>
+
+**No.** NUMA has higher peak performance **only with proper data placement**. If all the data sits on one node, other threads pay remote latency on every access and that node's memory becomes a bottleneck, which can be worse than UMA. UMA's advantage: simpler software, placement doesn't matter.
+</details>
+
+<details>
+<summary><b>14.</b> Give the two extra reasons caches matter in a multiprocessor.</summary>
+
+1. **The interconnect increases memory latency**, so misses cost more.
+2. **Memory and interconnect bandwidth are shared and precious**, so each miss also slows down the other processors. Caches reduce that pressure.
+</details>
+
+<details>
+<summary><b>15.</b> Coherence vs consistency, one line each. Then: in the <code>A = 1; flag = 1;</code> example, which one is the problem?</summary>
+
+**Coherence:** agreement on the values of **one** memory location.
+**Consistency:** agreement on the **order** of writes to **different** locations.
+
+The flag example is **consistency**: A and flag can each be coherent, but P2 sees the write to flag before the write to A.
+</details>
+
+<details>
+<summary><b>16.</b> Why do we need atomic instructions if we already have locks?</summary>
+
+Because **the lock itself** is a read-then-write (`while (L == 1); L = 1;`), and two threads can both read L = 0 and both take the lock. An atomic instruction such as **test-and-set**, **compare-and-swap** or **load-linked / store-conditional** does the read and the write as one indivisible step, so only one thread can win.
+</details>
+
+<details>
+<summary><b>17.</b> What are full/empty bits?</summary>
+
+An extra bit on each memory word marking it **full** or **empty**. A read can wait until the word is full, and a write until it's empty, so every word works as a small synchronization point. It costs extra bits on every word, which is why few machines (e.g. Tera/Cray MTA) used it.
 </details>
 
 ---
@@ -623,4 +749,4 @@ Ordinary loads and stores cannot do it. You need a hardware instruction that com
 
 ---
 
-*Previous: [Lecture 5 — Instruction-Level Parallelism](./05-ilp.md)*
+*Previous: [Lecture 5 — Instruction-Level Parallelism](./05-instruction-level-parallelism.md)*
