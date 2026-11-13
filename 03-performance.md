@@ -1,13 +1,6 @@
 # COE 502 — Lecture 3: Performance
 
-**Parallel Processing Architectures** · KFUPM · Dr. Abdulaziz Tabbakh
-*(Based on slides by Dr. Khalid Alhawaj, KFUPM)*
-
-> These notes follow deck `03-Performance.pdf`. Anything marked **[note]** is extra context
-> not on the slides.
->
-> This is the most *quantitative* deck in the course — nearly every section is a formula you
-> will be asked to apply. Work the examples by hand before trusting the summary.
+**Parallel Processing Architectures** 
 
 ---
 
@@ -17,16 +10,15 @@
 2. [The two performance metrics](#2-the-two-performance-metrics)
 3. [Processor performance — the Iron Law](#3-processor-performance--the-iron-law)
 4. [How do you evaluate a machine that doesn't exist?](#4-how-do-you-evaluate-a-machine-that-doesnt-exist)
-5. [Benchmarking](#5-benchmarking)
-6. [Performance reporting — which average?](#6-performance-reporting--which-average)
-7. [Amdahl's Law](#7-amdahls-law)
-8. [Parallel speedup](#8-parallel-speedup)
-9. [The four overheads, made concrete](#9-the-four-overheads-made-concrete)
-10. [FLOPS](#10-flops)
-11. [Energy and power](#11-energy-and-power)
-12. [Rpeak, Rmax and the Top500](#12-rpeak-rmax-and-the-top500)
-13. [Summary sheet](#13-summary-sheet)
-14. [Self-test](#14-self-test)
+5. [Performance reporting — which average?](#6-performance-reporting--which-average)
+6. [Amdahl's Law](#7-amdahls-law)
+7. [Parallel speedup](#8-parallel-speedup)
+8. [The four overheads, made concrete](#9-the-four-overheads-made-concrete)
+9. [FLOPS](#10-flops)
+10. [Energy and power](#11-energy-and-power)
+11. [Rpeak, Rmax and the Top500](#12-rpeak-rmax-and-the-top500)
+12. [Summary sheet](#13-summary-sheet)
+13. [Self-test](#14-self-test)
 
 ---
 
@@ -97,7 +89,7 @@ This is the same distinction as pipelining in Lecture 2, one level up. And the s
 
 $$\frac{\text{Time}}{\text{Program}} = \frac{\text{Instructions}}{\text{Program}} \times \frac{\text{ClockCycles}}{\text{Instruction}} \times \frac{\text{Time}}{\text{ClockCycles}}$$
 
-$$= \frac{\text{num\_dyn\_insts}}{\text{prog}} \times \frac{\text{total\_num\_cycles}}{\text{num\_dyn\_insts}} \times \frac{\text{time}}{\text{cycle}} = \text{num\_insts}_{dyn} \times \text{Average CPI} \times \text{time}_{cycle}$$
+$$= \frac{\text{num dyn insts}}{\text{prog}} \times \frac{\text{total num cycles}}{\text{num dyn insts}} \times \frac{\text{time}}{\text{cycle}} = \text{num insts}_{\text{dyn}} \times \text{Average CPI} \times \text{time}_{\text{cycle}}$$
 
 The middle form shows *why* it's a law and not a model: the units cancel. Instructions cancel against instructions, cycles against cycles, leaving time per program. It is true by construction.
 
@@ -156,51 +148,10 @@ Each term can be estimated **separately**:
 
 This is the practical reason the Iron Law matters in industry: it decomposes an unmeasurable quantity into three separately estimable ones.
 
----
-
-## 5. Benchmarking
-
-> **Which programs to consider?**
->
-> **Multiple real-world applications representative of the behaviors of programs in an application area** must be selected for a more rigorous comparison (**use-cases**).
->
-> The wall-clock time required to execute the benchmark will quantify the performance of the machine.
-
-Benchmark suites by domain:
-
-| Suite | Domain |
-|---|---|
-| **SPEC** — Standard Performance Evaluation Corporation (last version 2018) | PCs, workstations, microprocessors. Separate **integer** and **floating point** scores |
-| **TPC** — Transactional Processing Council | Servers |
-| **EEMBC** / **MiBench** | Embedded systems |
-| **MediaBench** | Multimedia capabilities |
-| **Rodinia** | Heterogeneous / GPU computing |
-| **PARSEC** *(written "PASRSEC" on the slide)* | Shared-memory multicore workloads |
-
-The last two matter for this course specifically — they are the suites built to stress parallel systems.
-
-### SPEC release 1
-
-| Benchmark | Type | Application description |
-|---|---|---|
-| 001.gcc | INT | GNU C compiler |
-| 008.espresso | INT | PLA optimizing tool |
-| 013.spice2g6 | FP | Circuit simulation and analysis |
-| 015.doduc | FP | Monte Carlo simulation |
-| 020.nasa7 | FP | Seven floating-point kernels |
-| 022.li | INT | LISP interpreter |
-| 023.eqntott | INT | Conversions of equations to truth table |
-| 030.matrix300 | FP | Matrix solutions |
-| 0.42fpppp | FP | Quantum chemistry application |
-| 047.tomcatv | FP | Mesh generation application |
-
-> INT = Integer intensive benchmark · FP = Double-precision floating-point benchmark
-
-**[note]** Every one is a **real application doing real work** — a compiler compiling, an interpreter interpreting. That's deliberate. A synthetic benchmark can be gamed by special-casing it in the compiler; a real workload is much harder to fake.
 
 ---
 
-## 6. Performance reporting — which average?
+## 5. Performance reporting — which average?
 
 You have run a suite. Ten programs, ten execution times. You want **one number**.
 
@@ -278,11 +229,11 @@ Arithmetic and harmonic means involve **sums**, and sums don't factor that way. 
 
 ---
 
-## 7. Amdahl's Law
+## 6. Amdahl's Law
 
 > Much like comparing the performance of benchmarks, we can quantify the speedup of the improved system **normalized to the old execution time of the unimproved system** (i.e. the system without the improvement becomes our baseline machine).
 
-$$\text{speedup} = \frac{\text{exec\_time}_{old}}{\text{exec\_time}_{new}}$$
+$$\text{Speedup} = \frac{\text{Old execution time}}{\text{New execution time}} = \frac{1}{(1-f) + \dfrac{f}{s}}$$
 
 ### Setting it up
 
@@ -365,32 +316,10 @@ $$S = \frac{1}{0.4 + \frac{0.6}{2}} = \frac{1}{0.7} = \mathbf{1.43} \quad \textb
 
 > ⚠️ **Watch the overlap.** The 60% for all FP instructions **includes** the 20% for square root — square root *is* a floating-point instruction. They are not separate portions you can add.
 
-### Reproducing the plots
-
-```python
-import numpy as np
-import matplotlib.pyplot as plt
-
-S = np.arange(1, 21)
-F = 0.5
-
-amdahl   = 1 / ((1 - F) + F / S)
-maximum  = np.full_like(S, 1 / (1 - F), dtype=float)
-marginal = np.diff(amdahl, prepend=1.0)       # gain from the previous S
-remaining = maximum - amdahl                   # how much is left
-
-plt.figure()
-plt.plot(S, maximum,   marker='d', label="Maximum speedup")
-plt.plot(S, amdahl,    marker='s', label="Amdahl speedup")
-plt.plot(S, marginal,  marker='o', label="Marginal speedup gain")
-plt.plot(S, remaining, marker='x', label="Remaining speedup gain")
-plt.xlabel("Acceleration factor, S"); plt.ylabel("Speedup")
-plt.xticks(S); plt.legend(); plt.grid(True); plt.show()
-```
 
 ---
 
-## 8. Parallel speedup
+## 7. Parallel speedup
 
 > Increasing the number of processors in a multiprocessor system or the number of cores in a chip multiprocessor **can be seen as an enhancement to a single core**. The acceleration factor is the **number of processors or cores (P)**.
 
@@ -446,7 +375,7 @@ Listed on slides 18 and 19 — **memorise these**, they are prime short-answer m
 
 ---
 
-## 9. The four overheads, made concrete
+## 8. The four overheads, made concrete
 
 Slide 19 is the clearest thing in the deck. A task takes **100 time units** on one processor. Four cases on **four** processors:
 
@@ -467,7 +396,7 @@ And case 2 shows the other half: work split perfectly, and you still lost 29% to
 
 ---
 
-## 10. FLOPS
+## 9. FLOPS
 
 > Standard rate for indicating the number of floating-point arithmetic calculations the system can perform on a **per-second** basis.
 
@@ -515,7 +444,7 @@ whole system  = single node × nodes
 
 ---
 
-## 11. Energy and power
+## 10. Energy and power
 
 > Power is important, but it **does not tell the full story**. Power is measured with the **Watt**, which is **Joules per second**. Energy is measured in **Joules**. This means power is the **average energy spent per second**.
 
@@ -538,7 +467,7 @@ It is also the deeper reason multicore beat higher clocks. Four cores at 4× pow
 
 ---
 
-## 12. Rpeak, Rmax and the Top500
+## 11. Rpeak and Rmax 
 
 | Term | Meaning |
 |---|---|
@@ -549,35 +478,10 @@ It is also the deeper reason multicore beat higher clocks. Four cores at 4× pow
 
 Rmax is always lower than Rpeak. The gap tells you how much of the theoretical capability real work can reach — and the four overheads from section 8 are exactly what eats the difference, at machine scale.
 
-From the Top500 table on slide 23:
-
-| Rank | System | Cores | Rmax (PFlop/s) | Rpeak (PFlop/s) | Power (kW) | Rmax/Rpeak |
-|---|---|---|---|---|---|---|
-| 1 | El Capitan | 11,039,616 | 1,742.00 | 2,746.38 | 29,581 | 63% |
-| 2 | Frontier | 9,066,176 | 1,353.00 | 2,055.72 | 24,607 | 66% |
-| 3 | Aurora | 9,264,128 | 1,012.00 | 1,980.01 | 38,698 | 51% |
-| 4 | JUPITER Booster | 4,801,344 | 793.40 | 930.00 | 13,088 | 85% |
-| 5 | Eagle | 2,073,600 | 561.20 | 846.84 | — | 66% |
-
-Note **El Capitan draws 29.6 MW** — roughly a small town. At that scale electricity dominates operating cost and cooling becomes civil engineering.
-
-### Green500 (slide 24)
-
-The Top500 reranked by **GFLOPS per watt** — the efficiency metric from section 1, in its most important instance.
-
-| Rank | Top500 rank | System | Rmax (PFlop/s) | Power (kW) | **GFLOPS/watt** |
-|---|---|---|---|---|---|
-| 1 | 259 | JEDI | 4.50 | 67 | **72.733** |
-| 2 | 148 | ROMEO-2025 | 9.86 | 160 | 70.912 |
-| 3 | 484 | Adastra 2 | 2.53 | 37 | 69.098 |
-| 4 | 183 | Isambard-AI phase 1 | 7.42 | 117 | 68.835 |
-| 5 | 255 | Otus (GPU only) | 4.66 | — | 68.177 |
-
-The rankings differ sharply from raw performance: **JEDI is #1 on Green500 and only #259 on the Top500.** Past a point, the binding constraint on a supercomputer is not how fast you can make it, but how much power you can deliver to the building and how much heat you can remove.
 
 ---
 
-## 13. Summary sheet
+## 12. Summary sheet
 
 ### Formulas
 
@@ -608,16 +512,10 @@ $$\text{Energy} = \text{Power} \times \text{Time}$$
 | Rpeak vs Rmax | theoretical vs measured (HPL/Linpack); Rmax always lower |
 | Energy vs power | 1 W × 10 min = 10 W × 1 min = **600 J** |
 
-### Exam hygiene
-
-- **Convert clock rate to cycle time first and write it down.** Most lost marks here are unit slips, not concept failures. Better still: divide **total cycles by clock rate** and skip the nanosecond conversion entirely — 3×10⁹ cycles ÷ 3×10⁹ Hz = 1 s exactly, no rounding.
-- **Write down f and S explicitly** before substituting into Amdahl. Confusing which is which is the other common failure.
-- **A speedup is always > 1.** If your answer comes out below 1, you inverted a ratio.
-- If a question asks *why*, name the **mechanism**, not the outcome.
 
 ---
 
-## 14. Self-test
+## 13. Self-test
 
 <details>
 <summary><b>1.</b> Machine A runs a program in 8 s; machine B runs it in 20 s. How many times faster is A than B?</summary>
