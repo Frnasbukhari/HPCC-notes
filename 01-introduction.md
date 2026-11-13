@@ -2,78 +2,9 @@
 
 **Parallel Processing Architectures** · KFUPM · Dr. Abdulaziz Tabbakh
 
-> These notes follow deck `01-Introduction.pdf` slide by slide, but expand on it.
-> Where the slide gives a bullet, these notes try to give the reason behind it.
-> Anything marked **[note]** is extra context that is not on the slides.
-
 ---
 
-## Contents
-
-1. [Course logistics](#1-course-logistics)
-2. [Serial computing](#2-serial-computing)
-3. [Parallel computing](#3-parallel-computing)
-4. [What counts as a parallel computer](#4-what-counts-as-a-parallel-computer)
-5. [The generic parallel machine](#5-the-generic-parallel-machine)
-6. [Why we need parallel computing](#6-why-we-need-parallel-computing)
-7. [Can serial computing keep up?](#7-can-serial-computing-keep-up)
-8. [Moore's Law](#8-moores-law)
-9. [Dennard scaling](#9-dennard-scaling)
-10. [Power — the equation that decided the industry](#10-power--the-equation-that-decided-the-industry)
-11. [Reliability](#11-reliability)
-12. [Trends in computer architecture — the 2004 inflection](#12-trends-in-computer-architecture--the-2004-inflection)
-13. [Amdahl's Law](#13-amdahls-law)
-14. [The memory wall](#14-the-memory-wall)
-15. [Spectrum of parallelization](#15-spectrum-of-parallelization)
-16. [HPC and the Top500](#16-hpc-and-the-top500)
-17. [Shared memory vs message passing](#17-shared-memory-vs-message-passing)
-18. [Types of parallelism — ILP, DLP, TLP](#18-types-of-parallelism--ilp-dlp-tlp)
-19. [Flynn's taxonomy](#19-flynns-taxonomy)
-20. [Putting the taxonomies together](#20-putting-the-taxonomies-together)
-21. [Summary sheet](#21-summary-sheet)
-22. [Self-test](#22-self-test)
-
----
-
-## 1. Course logistics
-
-| Component | Weight | Notes |
-|---|---|---|
-| Assignments and activities | 15% | Late submissions not accepted |
-| Quizzes | 10% | 2 quizzes |
-| Project | 20% | |
-| Midterm | 25% | In-person, Week 8 |
-| Final | 30% | Scheduled by registrar, Week 16 |
-
-Other rules: attendance is taken; the 7th unexcused absence is a DN grade. Cheating in a quiz or exam means F in the course. No makeups for missed quizzes or exams.
-
-### Learning outcomes
-
-1. Describe the design of parallel computer systems, including modern parallel architectures and design alternatives.
-2. Understand and analyze the operation of common **cache-coherence protocols** and **memory consistency models**, and their effect on software outcomes.
-3. Analyze the trade-offs of different approaches to parallel computing in terms of function, performance, and cost.
-4. Implement **synchronization methods** for shared memory and message passing parallel computers.
-
-### Course topics
-
-| # | Topic | Deck |
-|---|---|---|
-| 1 | Review 5-stage pipeline and MIPS architecture | 02 |
-| 2 | Performance Analysis | 03 |
-| 3 | Parallel Programming Models | 04 |
-| 4 | Instruction-Level Parallelism and Superscalar architectures | 05 |
-| 5 | Message Passing Architecture and Interface (MPI) | |
-| 6 | Multiprocessor and Shared Memory Architectures | |
-| 7 | Cache Coherence and Memory Consistency Models | |
-| 8 | OpenMP | |
-| 9 | System Interconnection | |
-| 10 | Advanced Topics | |
-
-**[note]** Lecture 1 is the map. Topics 5–9 each take one branch of this lecture and spend weeks on it. If a term here feels like it arrives without explanation, that is usually because it is a whole topic later on.
-
----
-
-## 2. Serial computing
+## 1. Serial computing
 
 Traditionally, software has been written for **serial computation**:
 
@@ -107,7 +38,7 @@ If one employee takes 1 second, 1000 employees take 1000 seconds. There is no wa
 
 ---
 
-## 3. Parallel computing
+## 2. Parallel computing
 
 > **Parallel computing is the simultaneous use of multiple compute resources to solve a computational problem.**
 
@@ -159,7 +90,7 @@ No amount of hardware helps the second loop. The dependency is in the mathematic
 
 Parallel work is always concurrent; concurrent work is not necessarily parallel. Concurrency is a way of **structuring** a program; parallelism is a way of **executing** it faster.
 
-### The bullet students skim: coordination
+### coordination
 
 "An overall control and coordination mechanism is employed" is where the difficulty lives. Somebody has to:
 
@@ -176,7 +107,7 @@ That coordination costs time the serial version never spent. It is why two proce
 
 ---
 
-## 4. What counts as a parallel computer
+## 3. What counts as a parallel computer
 
 > **(Parallel) Computer Architecture** is the science and art of selecting (or designing) and interconnecting hardware and software components to create (parallel) computers.
 
@@ -203,7 +134,7 @@ It is explicitly called out as *a fast-changing branch of computer architecture*
 
 ---
 
-## 5. The generic parallel machine
+## 4. The generic parallel machine
 
 Several **processing nodes** connected through an **interconnection network** which lets them exchange data. Each node has a processor (possibly multicore), a memory, a cache, and a network interface. I/O devices connect to an I/O bus which reaches the nodes through the interconnection network.
 
@@ -280,7 +211,7 @@ flowchart TB
 
 ---
 
-## 6. Why we need parallel computing
+## 5. Why we need parallel computing
 
 ### The traditional engineering paradigm
 
@@ -307,7 +238,7 @@ So there is always a finer grid to want. Weather forecasting is the clearest cas
 
 ---
 
-## 7. Can serial computing keep up?
+## 6. Can serial computing keep up?
 
 Historically, the clock speed of microprocessors increased **exponentially — about 50% every year**, due to:
 
@@ -331,7 +262,7 @@ They are not. Processors today run at 3–5 GHz, which is where they were twenty
 
 ---
 
-## 8. Moore's Law
+## 7. Moore's Law
 
 > An observation made in **1965 by Gordon Moore**, co-founder of Intel: the number of transistors that could fit on a microchip was **doubling approximately every 18–24 months**, while the cost per transistor was decreasing.
 
@@ -356,7 +287,7 @@ The slide ends with the two questions the rest of the deck answers:
 
 ---
 
-## 9. Dennard scaling
+## 8. Dennard scaling
 
 > Proposed by **Robert Dennard** and colleagues at IBM: as transistors get smaller, their **power density stays constant**, so power use stays in proportion with area.
 
@@ -382,7 +313,7 @@ That asymmetry is the whole story. Transistors kept arriving but could no longer
 
 ---
 
-## 10. Power — the equation that decided the industry
+## 9. Power — the equation that decided the industry
 
 Total power = **dynamic** + **static (leakage)**
 
@@ -426,7 +357,7 @@ Identical performance. **Sixteen times** the power cost. 4³ = 64.
 
 ---
 
-## 11. Reliability
+## 10. Reliability
 
 Shrinking transistors has a second cost. The charge stored in a circuit node is:
 
@@ -446,7 +377,7 @@ Shrink the transistor and **both C and V go down**, so there is less charge repr
 
 ---
 
-## 12. Trends in computer architecture — the 2004 inflection
+## 11. Trends in computer architecture — the 2004 inflection
 
 Slide 17 plots five quantities from 1970 to 2022 on a log scale, with a red dashed line at **~2004**:
 
@@ -467,9 +398,9 @@ That answers slide 14's "how do we use 100b transistors?"
 
 ---
 
-## 13. Amdahl's Law
+## 12. Amdahl's Law
 
-$$\text{Speedup} = \frac{\text{old\_exec\_time}}{\text{new\_exec\_time}} = \frac{1}{(1-f) + \dfrac{f}{s}}$$
+$$\text{Speedup} = \frac{\text{Old execution time}}{\text{New execution time}} = \frac{1}{(1-f) + \dfrac{f}{s}}$$
 
 | Symbol | Meaning |
 |---|---|
@@ -529,25 +460,6 @@ Half the theoretical ceiling, from four processors.
 |---|---|---|---|---|---|---|---|---|---|
 | Speedup | 1.00 | 1.67 | 2.50 | 3.33 | 4.00 | 4.44 | 4.71 | 4.81 | **5.00** |
 
-### Reproducing slide 21 yourself
-
-```python
-import numpy as np
-import matplotlib.pyplot as plt
-
-P = np.arange(1, 101)
-
-plt.figure()
-for f in [0.5, 0.6, 0.7, 0.8, 0.9]:
-    plt.plot(P, 1 / ((1 - f) + f / P), label=f"{int(f*100)}% parallel portion")
-
-plt.xlabel("Number of processors")
-plt.ylabel("Speedup")
-plt.title("Amdahl's Law")
-plt.legend()
-plt.grid(True)
-plt.show()
-```
 
 ### [note] Why real speedup falls short even of Amdahl
 
@@ -564,7 +476,7 @@ $$P_{opt} = \sqrt{\frac{T_{work}}{T_{per\text{-}processor\ overhead}}}$$
 
 ---
 
-## 14. The memory wall
+## 13. The memory wall
 
 > **"Hitting the Memory Wall: Implications of the Obvious"** — Wm. A. Wulf and Sally A. McKee, University of Virginia, December 1994.
 
@@ -586,7 +498,7 @@ This is why memory, caching and coherence take up so much of the course.
 
 ---
 
-## 15. Spectrum of parallelization
+## 14. Spectrum of parallelization
 
 Parallelism appears at four nested scales:
 
@@ -601,40 +513,7 @@ These are **not alternatives** — a real supercomputer has all four at once. Th
 
 ---
 
-## 16. HPC and the Top500
-
-> A **High-performance Computer** is a collection of processors that cooperate to solve large problems fast.
-> **Parallel computing is the driving force for high-performance computing.**
-
-HPC uses **supercomputers** and **computer clusters** to solve advanced computation problems. [Top500.org](https://www.top500.org) lists the most powerful computers in the world.
-
-As of June 2026, Saudi Arabia has **4 computers in the top 100** (8 in the top 500):
-
-| Rank | System | Institution |
-|---|---|---|
-| 22 | Shaheen III GPU | KAUST |
-| 51 | EYAS | TAHAKOM |
-| 64 | Shaheen III CPU | KAUST |
-| 96 | Dammam-7 | Saudi Aramco |
-| 114 | Ghawar-1 | Saudi Aramco |
-| 213 | Tuwaiq-1 | Saudi Aramco |
-| 322 | Unaizah-4 | Saudi Aramco |
-| 386 | Unizah-II | Saudi Aramco |
-
-### The future is parallel (slide 26)
-
-Projected cores in an 80 mm² die (*International Roadmap for Devices and Systems: More Moore*, 2020):
-
-| Year | 2020 | 2022 | 2025 | 2028 | 2031 | 2034 |
-|---|---|---|---|---|---|---|
-| **GPU cores** | 27 | 36 | 46 | 58 | 112 | **224** |
-| **CPU cores** | 12 | 20 | 31 | 53 | 96 | **182** |
-
-The direction is settled.
-
----
-
-## 17. Shared memory vs message passing
+## 15. Shared memory vs message passing
 
 The fundamental organisational split, and it determines how you program the machine.
 
@@ -774,7 +653,7 @@ RECV(&B, sizeof(B), P2, SEND_B);     RECV(&A, sizeof(B), P1, SEND_A);
 
 ---
 
-## 18. Types of parallelism — ILP, DLP, TLP
+## 16. Types of parallelism — ILP, DLP, TLP
 
 > Any given application exhibits a specific property that dictates which form of parallelism is most suitable.
 > These properties are **inherent**; however, they can be influenced by the implementation — a poor implementation can impact the level of such property.
@@ -829,7 +708,7 @@ Whether it is *efficient* is the question the slide poses — it is not especial
 
 ---
 
-## 19. Flynn's taxonomy
+## 17. Flynn's taxonomy
 
 > Flynn's taxonomy distinguishes multi-processor computer architectures according to how they can be classified along the **two independent dimensions** of **Instruction Stream** and **Data Stream**. Each dimension can have only one of two possible states: **Single** or **Multiple**.
 
@@ -877,7 +756,7 @@ That last note matters — the categories describe a *level*, not the whole mach
 
 ---
 
-## 20. Putting the taxonomies together
+## 18. Putting the taxonomies together
 
 **[note]** This section is not on the slides. It exists because the lecture introduces four different classification schemes and does not say how they relate. They are not competing lists — they are **different lenses, stacked**:
 
@@ -896,111 +775,7 @@ Three consequences worth holding on to:
 
 **Layer 3 and layer 4 should match.** You *can* program a message-passing machine in a shared-memory style; it works, and it works slowly, because every innocent-looking variable access becomes a network round trip. This mismatch is the most common cause of parallel code that is correct and useless.
 
----
 
-## 21. Summary sheet
-
-### Formulas
-
-$$\text{cycle time} = \frac{1}{\text{clock rate}} \qquad\text{(2 GHz → 0.5 ns)}$$
-
-$$P_{dynamic} = \alpha C V^2 f \propto f^3 \qquad\qquad P_{static} = V I_{sub}$$
-
-$$q = C \times V \qquad\text{(less charge → easier to flip a bit)}$$
-
-$$\text{Speedup} = \frac{1}{(1-f) + f/s} \qquad\qquad S_{max} = \frac{1}{1-f}$$
-
-$$S_P = \frac{1}{(1-F) + F/P}$$
-
-### Numbers worth remembering
-
-| Fact | Value |
-|---|---|
-| 4 cores vs 4× clock | 4× power vs **64×** power |
-| Moore's Law doubling | every **18–24 months** |
-| Feature size | −30% per process, halved every 5 years |
-| Transistors on a chip | 1B in 2008 · 100B in 2021 |
-| Clock rate if the trend had continued | **>30 GHz** |
-| The inflection year | **~2004** |
-| Processor–memory gap by 2010 | **~4 orders of magnitude** |
-| Die area that is cache | **>60%** |
-| Saudi systems in Top500 (June 2026) | 8 total, 4 in top 100 |
-
-### The one-paragraph version of the whole lecture
-
-> Science increasingly runs on simulation, and simulation's appetite for compute is unbounded. For thirty years supply kept up for free: Moore's Law delivered more transistors and Dennard scaling let them run faster inside the same power budget. Dennard scaling broke in the mid-2000s, and because dynamic power goes as the **cube** of frequency, making one processor faster became physically impossible to cool — four cores cost 4× the power for 4× the speed, one core clocked 4× faster costs 64×. Moore's Law kept delivering transistors, so they were spent on **more cores** instead. That is why performance is now the programmer's problem, and why this course is about expressing parallelism: how to split work (DLP, TLP), what hardware exploits it (Flynn), how processors share data (shared memory vs message passing) — and why **Amdahl's Law** means the serial fraction of your program, not the number of cores, sets your ceiling.
-
----
-
-## 22. Self-test
-
-<details>
-<summary><b>1.</b> Why did the industry move to multicore instead of higher clock rates?</summary>
-
-Dynamic power is proportional to **f³**, because running faster requires higher voltage and power depends on V². Replicating a processor 4 times gives 4× speedup for 4× power; clocking one processor 4 times faster gives the same 4× speedup for **64×** power. Sixteen times worse, for identical performance — and the heat cannot be removed.
-</details>
-
-<details>
-<summary><b>2.</b> State the difference between Moore's Law and Dennard scaling. Which one broke?</summary>
-
-**Moore's Law** (1965, Gordon Moore) is an observation that transistor *count* per chip doubles every 18–24 months while cost per transistor falls. It says nothing about speed.
-
-**Dennard scaling** (Robert Dennard, IBM) says that as transistors shrink, voltage and current scale down with size, so **power density stays constant** — which is what made Moore's extra transistors free to run faster.
-
-**Dennard scaling broke** in the mid-2000s when voltage stopped scaling (leakage). Moore's Law kept going.
-</details>
-
-<details>
-<summary><b>3.</b> List Flynn's four categories and say which has essentially no real implementations.</summary>
-
-**SISD** (serial computer), **SIMD** (vector/array processors, GPUs), **MISD**, **MIMD** (supercomputers, clusters, multicore PCs — the most common).
-
-**MISD** has few if any actual examples; C.mmp from Carnegie-Mellon is the one usually cited.
-</details>
-
-<details>
-<summary><b>4.</b> A program is 60% parallelisable. What is the maximum speedup with unlimited processors? What is the speedup on 8 processors?</summary>
-
-Ceiling: 1/(1 − 0.6) = 1/0.4 = **2.5**
-
-On 8: 1/(0.4 + 0.6/8) = 1/(0.4 + 0.075) = 1/0.475 = **2.11**
-</details>
-
-<details>
-<summary><b>5.</b> In the shared-memory matrix multiply, why are BOTH a barrier and a lock required? What goes wrong if you only use one?</summary>
-
-They do different jobs.
-
-- The **lock** provides mutual exclusion: `sum += mysum` is really read-add-write, so without it two threads can interleave and one partial sum is silently lost.
-- The **barrier** provides ordering: threads are asynchronous, so without it a fast thread could add its partial sum and read the "final" total before a slower thread has finished multiplying.
-
-Lock only → correct-looking program, wrong answer (incomplete total). Barrier only → lost updates.
-</details>
-
-<details>
-<summary><b>6.</b> Name the four reasons real parallel speedup falls short of P.</summary>
-
-1. Inter-processor communication
-2. Load imbalance
-3. Synchronisation
-4. Redundant (extra) computation
-</details>
-
-<details>
-<summary><b>7.</b> Why is over 60% of a modern die given over to cache?</summary>
-
-The **memory wall** (Wulf & McKee, 1994): processor performance grew far faster than memory performance, and the gap reached ~4 orders of magnitude by 2010. The processor can execute thousands of instructions in the time one main-memory fetch returns, so most of the chip is spent holding data close enough to keep the cores fed.
-</details>
-
-<details>
-<summary><b>8.</b> Distinguish SIMD from SPMD.</summary>
-
-**SIMD** is a *hardware* arrangement: one instruction unit drives many data paths in lockstep; every unit executes the same instruction in the same cycle.
-
-**SPMD** is a *programming* arrangement: every processor runs the same program text but **independently** — own program counter, own branches. Thread 3 can be in a different part of the code from thread 7.
-
-Almost all real parallel code is SPMD, running on MIMD hardware.
-</details>
 
 ---
 
